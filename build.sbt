@@ -14,7 +14,7 @@ ThisBuild / publishAsOSSProject := false
 lazy val publishTestsSettings = Seq(
   Test / packageBin / publishArtifact := true)
 
-lazy val PrecogVersion = Def.setting[String](managedVersions.value("precog-precog"))
+lazy val precogVersion = Def.setting[String](managedVersions.value("precog-precog"))
 
 lazy val root = project
   .in(file("."))
@@ -26,5 +26,6 @@ lazy val rateLimit = project
   .settings(name := "rate-limit")
   .settings(
     libraryDependencies ++= Seq(
-      "com.precog" %% "precog-spi" % PrecogVersion.value
-    ))
+      "com.precog" %% "precog-spi" % precogVersion.value
+    )
+  )

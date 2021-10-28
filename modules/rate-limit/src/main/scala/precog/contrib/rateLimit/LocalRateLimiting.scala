@@ -32,7 +32,7 @@ import cats.effect.Temporal
 import cats.implicits._
 import precog.spi.capability.RateLimiting
 
-final class RateLimiter[F[_]: Async, A: Hash] private () {
+final class LocalRateLimiting[F[_]: Async, A: Hash] private () {
 
   // TODO make this clustering-aware
   private val configs: TrieMap[A, RateLimiterConfig] =
@@ -65,7 +65,7 @@ final class RateLimiter[F[_]: Async, A: Hash] private () {
 
       updateUsage: (Int => Int) = mode match {
         case RateLimiting.Mode.Counting => (_ + 1)
-        case RateLimiting.Mode.External => (x => x)
+        case RateLimiting.Mode.External => identity
       }
 
       now <- nowF
@@ -203,20 +203,41 @@ final class RateLimiter[F[_]: Async, A: Hash] private () {
   private val nowF: F[FiniteDuration] =
     Clock[F].realTime
 
-  private sealed trait State[F[_]]
+  private sealed trait State[G[_]]
 
   /* @param start the start time of the current window
    * @param count the number of requests made during the current window
    * @param queue the queue of requests deferred while rate limiting
    */
-  private case class Active[F[_]](
+  private case class Active[G[_]](
       start: FiniteDuration,
       count: Int,
-      queue: Queue[Deferred[F, Unit]],
-      cancel: F[Unit])
-      extends State[F]
+      queue: Queue[Deferred[G, Unit]],
+      cancel: G[Unit])
+      extends State[G]
 
-  private case class Done[F[_]]() extends State[F]
+  private case class Done[G[_]]() extends State[G]
+}
+
+object LocalRateLimiting {
+  def apply[F[_]: Async]: Resource[F, RateLimiting[F]] = {
+    val acquire = Async[F].delay(new LocalRateLimiting[F, String]())
+    val release: LocalRateLimiting[F, String] => F[Unit] = _.cancelAll
+    val rateLimiter = Resource.make(acquire)(release)
+
+    rateLimiter map { rl =>
+      new RateLimiting[F] {
+        def rateLimit(
+            id: String,
+            max: Int,
+            window: FiniteDuration,
+            mode: RateLimiting.Mode): F[RateLimiting.Signals[F]] = {
+
+          rl(id, max, window, mode)
+        }
+      }
+    }
+  }
 }
 
 object hash {
@@ -227,16 +248,4 @@ object hash {
 object eqv {
   def toEquiv[A: Eq]: Equiv[A] =
     Equiv.fromFunction(Eq[A].eqv(_, _))
-}
-
-object RateLimiter {
-  def apply[F[_]: Concurrent: Temporal, A: Hash](
-      freshKey: F[A]): Resource[F, RateLimiting[F]] = {
-
-    val acquire = Concurrent[F].delay(RateLimiting[F, A](new RateLimiter[F, A](), freshKey))
-
-    def release(rl: RateLimiting[F, A]): F[Unit] = rl.limiter.cancelAll
-
-    Resource.make[F, RateLimiting[F, A]](acquire)(release)
-  }
 }
