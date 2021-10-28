@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package precog.contrib.rateLimit
+package precog.contrib.ratelimit
 
 import scala.collection.concurrent.TrieMap
 import scala.collection.immutable.Queue
