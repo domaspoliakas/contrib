@@ -9,9 +9,6 @@ ThisBuild / scmInfo := Some(
 
 ThisBuild / publishAsOSSProject := false
 
-// Include to also publish a project's tests
-lazy val publishTestsSettings = Seq(Test / packageBin / publishArtifact := true)
-
 lazy val precogVersion = Def.setting[String](managedVersions.value("precog-precog"))
 
 lazy val root = project.in(file(".")).settings(noPublishSettings).aggregate(rateLimit)
