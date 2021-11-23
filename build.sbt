@@ -15,7 +15,7 @@ lazy val root = project.in(file(".")).settings(noPublishSettings).aggregate(rate
 
 lazy val rateLimit = project
   .in(file("modules/rate-limit"))
-  .settings(name := "rate-limit")
+  .settings(name := "contrib-ratelimit")
   .settings(
     libraryDependencies ++= Seq(
       "org.typelevel" %% "cats-effect" % CatsEffectVersion
