@@ -9,15 +9,15 @@ ThisBuild / scmInfo := Some(
 
 ThisBuild / publishAsOSSProject := false
 
-lazy val precogVersion = Def.setting[String](managedVersions.value("precog-precog"))
+val CatsEffectVersion = "3.2.5"
 
 lazy val root = project.in(file(".")).settings(noPublishSettings).aggregate(rateLimit)
 
 lazy val rateLimit = project
   .in(file("modules/rate-limit"))
-  .settings(name := "rate-limit")
+  .settings(name := "contrib-ratelimit")
   .settings(
     libraryDependencies ++= Seq(
-      "com.precog" %% "precog-spi" % precogVersion.value
+      "org.typelevel" %% "cats-effect" % CatsEffectVersion
     )
   )

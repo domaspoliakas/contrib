@@ -30,7 +30,6 @@ import cats.effect.Ref
 import cats.effect.Resource
 import cats.effect.Temporal
 import cats.implicits._
-import precog.spi.capability.RateLimiting
 
 final class LocalRateLimiting[F[_]: Async, A: Hash] private () {
 
