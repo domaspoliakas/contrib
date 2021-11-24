@@ -16,7 +16,7 @@ lazy val root = project.in(file(".")).settings(noPublishSettings).aggregate(rate
 
 lazy val fs2 = project
   .in(file("modules/fs2"))
-  .settings(name := "fs2")
+  .settings(name := "contrib-fs2")
   .settings(
     libraryDependencies ++= Seq(
       "co.fs2" %% "fs2-io" % Fs2Version
