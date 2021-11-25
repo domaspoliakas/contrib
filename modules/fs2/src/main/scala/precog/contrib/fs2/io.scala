@@ -26,8 +26,11 @@ object io {
       resourceName: String,
       cl: ClassLoader = getClass.getClassLoader,
       chunkSize: Int = 32 * 1024): Stream[F, Byte] =
-    Stream.eval(Sync[F].delay(Option(cl.getResourceAsStream(resourceName)))).flatMap {
-      case None => Stream.raiseError[F](new Exception(s"Resource not found: $resourceName"))
-      case Some(s) => fs2.io.readInputStream(s.pure[F], chunkSize)
-    }
+    fs2
+      .io
+      .readInputStream(
+        Sync[F].defer(
+          Option(cl.getResourceAsStream(resourceName))
+            .liftTo[F](new Exception(s"Resource not found: $resourceName"))),
+        chunkSize)
 }
