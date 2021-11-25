@@ -17,13 +17,20 @@
 package precog.contrib.fs2
 
 import cats.effect.Sync
+import cats.implicits._
 import fs2.Stream
 
-object IO {
+object io {
+
   def resourceAsBytes[F[_]: Sync](
       resourceName: String,
       cl: ClassLoader = getClass.getClassLoader,
       chunkSize: Int = 32 * 1024): Stream[F, Byte] =
-    fs2.io.readInputStream(Sync[F].delay(cl.getResourceAsStream(resourceName)), chunkSize)
-
+    fs2
+      .io
+      .readInputStream(
+        Sync[F].defer(
+          Option(cl.getResourceAsStream(resourceName))
+            .liftTo[F](new Exception(s"Resource not found: $resourceName"))),
+        chunkSize)
 }
