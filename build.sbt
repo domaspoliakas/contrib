@@ -12,7 +12,7 @@ ThisBuild / publishAsOSSProject := false
 val CatsEffectVersion = "3.3.0"
 val Fs2Version = "3.2.3"
 
-lazy val root = project.in(file(".")).settings(noPublishSettings).aggregate(rateLimit, fs2)
+lazy val root = project.in(file(".")).settings(noPublishSettings).aggregate(rateLimit)
 
 lazy val rateLimit = project
   .in(file("modules/rate-limit"))
