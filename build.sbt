@@ -9,19 +9,10 @@ ThisBuild / scmInfo := Some(
 
 ThisBuild / publishAsOSSProject := false
 
-val CatsEffectVersion = "3.2.5"
-val Fs2Version = "3.0.6"
+val CatsEffectVersion = "3.3.0"
+val Fs2Version = "3.2.3"
 
 lazy val root = project.in(file(".")).settings(noPublishSettings).aggregate(rateLimit, fs2)
-
-lazy val fs2 = project
-  .in(file("modules/fs2"))
-  .settings(name := "contrib-fs2")
-  .settings(
-    libraryDependencies ++= Seq(
-      "co.fs2" %% "fs2-io" % Fs2Version
-    )
-  )
 
 lazy val rateLimit = project
   .in(file("modules/rate-limit"))
