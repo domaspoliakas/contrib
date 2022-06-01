@@ -14,7 +14,8 @@ val Http4sVersion = "0.23.11"
 val Fs2Version = "3.2.3"
 val Log4CatsVersion = "2.2.0"
 
-lazy val root = project.in(file(".")).settings(noPublishSettings).aggregate(rateLimit, http4sLogger)
+lazy val root =
+  project.in(file(".")).settings(noPublishSettings).aggregate(rateLimit, http4sLogger)
 
 lazy val rateLimit = project
   .in(file("modules/rate-limit"))
