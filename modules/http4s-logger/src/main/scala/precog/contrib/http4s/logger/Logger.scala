@@ -67,12 +67,12 @@ object LoggerMiddleware {
       logReq: String => F[Unit],
       logResp: (Status, String) => F[Unit]): Client[F] => Client[F] = { client =>
     def logResponse(resp: Response[F]): F[Unit] =
-      resp.body.compile.to(Array).map(new String(_, StandardCharsets.UTF_8)).flatMap { str =>
+      resp.body.through(fs2.text.utf8.decode).compile.string flatMap { str =>
         logResp(resp.status, bodyMessageWrap(resp, str))
       }
 
     def logRequest(req: Request[F]): F[Unit] =
-      req.body.compile.to(Array).map(new String(_, StandardCharsets.UTF_8)).flatMap { str =>
+      req.body.through(fs2.text.utf8.decode).compile.string flatMap { str =>
         logReq(reqMessageWrap(req, str))
       }
 
@@ -128,7 +128,7 @@ object LoggerMiddleware {
       logReq: String => F[Unit],
       logResp: (Status, String) => F[Unit]): Client[F] => Client[F] = { client =>
     def logRequest(req: Request[F]): F[Unit] =
-      req.body.compile.to(Array).map(new String(_, StandardCharsets.UTF_8)).flatMap { str =>
+      req.body.through(fs2.text.utf8.decode).compile.string flatMap { str =>
         logReq(reqMessageWrap(req, str))
       }
 
