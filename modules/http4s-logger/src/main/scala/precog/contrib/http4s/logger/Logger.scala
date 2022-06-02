@@ -37,11 +37,11 @@ object LoggerMiddleware {
   def client[F[_]: Async](logger: SelfAwareStructuredLogger[F]): Client[F] => Client[F] =
     complete[F](
       logger,
-      logger.debug(_),
+      logger.trace(_),
       { (status, text) =>
         status.responseClass match {
           case Status.Informational | Status.Successful | Status.Redirection =>
-            logger.debug(text)
+            logger.trace(text)
           case Status.ClientError | Status.ServerError => logger.warn(text)
         }
       }
@@ -52,11 +52,11 @@ object LoggerMiddleware {
       max: Long = DefaultMaxChunks): Client[F] => Client[F] =
     realtimeResponseChunksLogger[F](
       max,
-      logger.debug(_),
+      logger.trace(_),
       { (status, text) =>
         status.responseClass match {
           case Status.Informational | Status.Successful | Status.Redirection =>
-            logger.debug(text)
+            logger.trace(text)
           case Status.ClientError | Status.ServerError => logger.warn(text)
         }
       }
