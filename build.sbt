@@ -10,9 +10,12 @@ ThisBuild / scmInfo := Some(
 ThisBuild / publishAsOSSProject := false
 
 val CatsEffectVersion = "3.3.0"
+val Http4sVersion = "0.23.11"
 val Fs2Version = "3.2.3"
+val Log4CatsVersion = "2.2.0"
 
-lazy val root = project.in(file(".")).settings(noPublishSettings).aggregate(rateLimit)
+lazy val root =
+  project.in(file(".")).settings(noPublishSettings).aggregate(rateLimit, http4sLogger)
 
 lazy val rateLimit = project
   .in(file("modules/rate-limit"))
@@ -20,5 +23,15 @@ lazy val rateLimit = project
   .settings(
     libraryDependencies ++= Seq(
       "org.typelevel" %% "cats-effect" % CatsEffectVersion
+    )
+  )
+
+lazy val http4sLogger = project
+  .in(file("modules/http4s-logger"))
+  .settings(name := "contrib-logger")
+  .settings(
+    libraryDependencies ++= Seq(
+      "org.http4s" %% "http4s-client" % Http4sVersion,
+      "org.typelevel" %% "log4cats-slf4j" % Log4CatsVersion
     )
   )
