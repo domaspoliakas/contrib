@@ -7,8 +7,6 @@ ThisBuild / homepage := Some(url("https://github.com/precog/contrib"))
 ThisBuild / scmInfo := Some(
   ScmInfo(url("https://github.com/precog/contrib"), "scm:git@github.com:precog/contrib.git"))
 
-ThisBuild / publishAsOSSProject := false
-
 val CatsEffectVersion = "3.3.0"
 val Http4sVersion = "0.23.11"
 val Fs2Version = "3.2.3"
