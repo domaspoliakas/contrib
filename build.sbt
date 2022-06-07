@@ -9,7 +9,6 @@ ThisBuild / scmInfo := Some(
 
 val CatsEffectVersion = "3.3.12"
 val Http4sVersion = "0.23.12"
-val Fs2Version = "3.2.3"
 val Log4CatsVersion = "2.3.1"
 
 lazy val root =
