@@ -1,4 +1,4 @@
-ThisBuild / scalaVersion := "2.13.6"
+ThisBuild / scalaVersion := "2.13.8"
 
 ThisBuild / githubRepository := "contrib"
 
@@ -7,10 +7,9 @@ ThisBuild / homepage := Some(url("https://github.com/precog/contrib"))
 ThisBuild / scmInfo := Some(
   ScmInfo(url("https://github.com/precog/contrib"), "scm:git@github.com:precog/contrib.git"))
 
-val CatsEffectVersion = "3.3.0"
-val Http4sVersion = "0.23.11"
-val Fs2Version = "3.2.3"
-val Log4CatsVersion = "2.2.0"
+val CatsEffectVersion = "3.3.12"
+val Http4sVersion = "0.23.12"
+val Log4CatsVersion = "2.3.1"
 
 lazy val root =
   project.in(file(".")).settings(noPublishSettings).aggregate(rateLimit, http4sLogger)
