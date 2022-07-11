@@ -29,12 +29,12 @@ import org.http4s.Request
 import org.http4s.Response
 import org.http4s.Status
 import org.http4s.client.Client
-import org.typelevel.log4cats.SelfAwareStructuredLogger
+import org.typelevel.log4cats.Logger
 
 object LoggerMiddleware {
   val DefaultMaxChunks = 10L
 
-  def client[F[_]: Async](logger: SelfAwareStructuredLogger[F]): Client[F] => Client[F] =
+  def client[F[_]: Async](logger: Logger[F]): Client[F] => Client[F] =
     complete[F](
       logger,
       logger.trace(_),
@@ -48,7 +48,7 @@ object LoggerMiddleware {
     )
 
   def realtimeResponseChunks[F[_]: Async](
-      logger: SelfAwareStructuredLogger[F],
+      logger: Logger[F],
       max: Long = DefaultMaxChunks): Client[F] => Client[F] =
     realtimeResponseChunksLogger[F](
       max,
@@ -63,7 +63,7 @@ object LoggerMiddleware {
     )
 
   def complete[F[_]: Async](
-      logger: SelfAwareStructuredLogger[F],
+      logger: Logger[F],
       logReq: String => F[Unit],
       logResp: (Status, String) => F[Unit]): Client[F] => Client[F] = { client =>
     def logResponse(resp: Response[F]): F[Unit] =
@@ -99,28 +99,26 @@ object LoggerMiddleware {
     }
   }
 
-  def responseLoggerComplete[F[_]](
-      logger: SelfAwareStructuredLogger[F],
-      logMessage: Response[F] => F[Unit])(implicit F: Async[F]): Client[F] => Client[F] = {
-    client =>
-      def logResponse(response: Response[F]): Resource[F, Response[F]] =
-        Resource.suspend {
-          Ref[F].of(Vector.empty[Chunk[Byte]]).map { vec =>
-            val dumpChunksToVec: Pipe[F, Byte, Nothing] =
-              _.chunks.flatMap(s => Stream.exec(vec.update(_ :+ s)))
+  def responseLoggerComplete[F[_]](logger: Logger[F], logMessage: Response[F] => F[Unit])(
+      implicit F: Async[F]): Client[F] => Client[F] = { client =>
+    def logResponse(response: Response[F]): Resource[F, Response[F]] =
+      Resource.suspend {
+        Ref[F].of(Vector.empty[Chunk[Byte]]).map { vec =>
+          val dumpChunksToVec: Pipe[F, Byte, Nothing] =
+            _.chunks.flatMap(s => Stream.exec(vec.update(_ :+ s)))
 
-            Resource.make(
-              // Cannot Be Done Asynchronously - Otherwise All Chunks May Not Be Appended before Finalization
-              F.pure(response.withBodyStream(response.body.observe(dumpChunksToVec)))
-            ) { r =>
-              val newBody = Stream.eval(vec.get).flatMap(Stream.emits).unchunks
-              logMessage(r.withBodyStream(newBody)).handleErrorWith(t =>
-                logger.error(t)("Error logging response body"))
-            }
+          Resource.make(
+            // Cannot Be Done Asynchronously - Otherwise All Chunks May Not Be Appended before Finalization
+            F.pure(response.withBodyStream(response.body.observe(dumpChunksToVec)))
+          ) { r =>
+            val newBody = Stream.eval(vec.get).flatMap(Stream.emits).unchunks
+            logMessage(r.withBodyStream(newBody)).handleErrorWith(t =>
+              logger.error(t)("Error logging response body"))
           }
         }
+      }
 
-      Client(req => client.run(req).flatMap(logResponse))
+    Client(req => client.run(req).flatMap(logResponse))
   }
 
   def realtimeResponseChunksLogger[F[_]: Async](
