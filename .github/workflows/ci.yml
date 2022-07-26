@@ -141,6 +141,8 @@ jobs:
       - name: Publish artifacts and create tag
         run: ./scripts/publishAndTag ${{ github.repository }}
 
+      - run: $SBT ++${{ matrix.scala }} dependencyUpdates
+
   auto-merge:
     name: Auto Merge
     needs: [build]
