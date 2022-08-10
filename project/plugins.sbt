@@ -7,4 +7,4 @@ credentials += Credentials(
 
 resolvers += "GitHub Package Registry" at "https://maven.pkg.github.com/precog/_"
 
-addSbtPlugin("com.precog" % "sbt-precog-config" % "6.0.3")
+addSbtPlugin("com.precog" % "sbt-precog-config" % "6.1.0")
