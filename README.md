@@ -5,3 +5,4 @@
 ```sbt
 libraryDependencies += "com.precog" %% "contrib" % <version>
 ```
+
