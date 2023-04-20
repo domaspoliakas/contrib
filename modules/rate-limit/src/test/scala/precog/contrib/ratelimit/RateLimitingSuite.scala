@@ -57,7 +57,7 @@ abstract class RateLimitingSuite(
     testControl: IO[Unit] => IO[Unit])
     extends munit.CatsEffectSuite {
 
-  val tinyDuration = FiniteDuration(50, TimeUnit.MILLISECONDS)
+  val tinyDuration = FiniteDuration(60, TimeUnit.MILLISECONDS)
   val windowDuration = FiniteDuration(2, TimeUnit.SECONDS)
 
   test("counting: sequence of limits works") {

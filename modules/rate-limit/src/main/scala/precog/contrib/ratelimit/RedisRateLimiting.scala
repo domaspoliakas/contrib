@@ -49,7 +49,8 @@ class RedisRateLimiting[F[_], A](conn: RedisConnection[F])(implicit F: Async[F])
     for {
       now <- nowF
       stableEndEpochSec = stableEnd(now, window)
-      _ <- set(key, stableEndEpochSec, max - usage)
+      expire = FiniteDuration(stableEndEpochSec + 1, TimeUnit.SECONDS) - now
+      _ <- set(key, expire.toSeconds, stableEndEpochSec, max - usage)
     } yield ()
 
   private def backoff(key: String, max: Int, window: FiniteDuration): F[Unit] =
@@ -93,9 +94,9 @@ class RedisRateLimiting[F[_], A](conn: RedisConnection[F])(implicit F: Async[F])
     }
   }
 
-  private def set(key: String, endEpochSec: Long, i: Int): F[Unit] = {
+  private def set(key: String, expireSec: Long, endEpochSec: Long, i: Int): F[Unit] = {
     val op =
-      RedisCommands.set[Redis[F, *]](s"$key:$endEpochSec", i.toString()).void
+      RedisCommands.set[Redis[F, *]](s"$key:$endEpochSec", i.toString(), RedisCommands.SetOpts.default.copy(setSeconds = expireSec.some)).void
 
     op.run(conn)
   }
