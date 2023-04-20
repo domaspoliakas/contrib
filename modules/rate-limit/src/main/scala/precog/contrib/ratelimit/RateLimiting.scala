@@ -76,4 +76,17 @@ object RateLimiting {
    *   limits
    */
   final case class Signals[F[_]](limit: F[Unit], backoff: F[Unit], setUsage: Int => F[Unit])
+
+  def modifyRateLimitId[F[_]](f: String => String)(rl: RateLimiting[F]): RateLimiting[F] =
+    new RateLimiting[F] {
+
+      override def rateLimit(
+          id: String,
+          max: Int,
+          window: FiniteDuration,
+          mode: RateLimiting.Mode): F[RateLimiting.Signals[F]] =
+        rl.rateLimit(f(id), max, window, mode)
+
+    }
+
 }

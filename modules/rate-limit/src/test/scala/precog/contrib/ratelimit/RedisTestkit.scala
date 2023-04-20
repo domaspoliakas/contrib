@@ -46,16 +46,18 @@ object RedisTestkit {
 
   def connection: Resource[IO, RedisConnection[IO]] =
     sharedContainer.flatMap { c =>
+      val serviceHost = c.getServiceHost("redis", 6379)
+      val servicePort = c.getServicePort("redis", 6379)
       RedisConnection
         .direct[IO]
         .withHost(
           Host
-            .fromString(c.getServiceHost("redis", 6379))
-            .getOrElse(sys.error("Could not get service host for redis")))
+            .fromString(serviceHost)
+            .getOrElse(sys.error(s"Could not create host from '$serviceHost'")))
         .withPort(
           Port
-            .fromInt(c.getServicePort("redis", 6379))
-            .getOrElse(sys.error("Could not get service port for redis")))
+            .fromInt(servicePort)
+            .getOrElse(sys.error(s"Could not create port from '$servicePort")))
         .build
     }
 
