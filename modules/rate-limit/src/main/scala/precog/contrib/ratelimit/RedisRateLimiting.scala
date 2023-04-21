@@ -25,6 +25,8 @@ import io.chrisdavenport.rediculous.Redis
 import io.chrisdavenport.rediculous.RedisCommands
 import io.chrisdavenport.rediculous.RedisConnection
 import io.chrisdavenport.rediculous.RedisTransaction
+import precog.contrib.ratelimit.RateLimiting.Mode.Counting
+import precog.contrib.ratelimit.RateLimiting.Mode.External
 
 class RedisRateLimiting[F[_], A](conn: RedisConnection[F])(implicit F: Async[F])
     extends RateLimiting[F] {
@@ -36,13 +38,10 @@ class RedisRateLimiting[F[_], A](conn: RedisConnection[F])(implicit F: Async[F])
       mode: RateLimiting.Mode): F[RateLimiting.Signals[F]] =
     RateLimiting
       .Signals[F](
-        limit(key, max, window),
+        limit(key, max, window, mode),
         backoff(key, max, window),
-        setUsage(key, max, window))
+        setWindowUsage(key, max, window))
       .pure[F]
-
-  private def setUsage(key: String, max: Int, window: FiniteDuration)(usage: Int): F[Unit] =
-    setWindowUsage(key, max, window)(usage)
 
   private def setWindowUsage(key: String, max: Int, window: FiniteDuration)(
       usage: Int): F[Unit] =
@@ -56,17 +55,25 @@ class RedisRateLimiting[F[_], A](conn: RedisConnection[F])(implicit F: Async[F])
   private def backoff(key: String, max: Int, window: FiniteDuration): F[Unit] =
     setWindowUsage(key, max, window)(max)
 
-  private def limit(key: String, max: Int, window: FiniteDuration): F[Unit] =
+  private def limit(
+      key: String,
+      max: Int,
+      window: FiniteDuration,
+      mode: RateLimiting.Mode): F[Unit] =
     for {
       now <- nowF
       stableEndEpochSec = stableEnd(now, window)
-      reqsRemaining <- decr(key, stableEndEpochSec, max)
+      expire = FiniteDuration(stableEndEpochSec + 1, TimeUnit.SECONDS) - now
+      reqsRemaining <- mode match {
+        case Counting => decr(key, expire.toSeconds, stableEndEpochSec, max)
+        case External => noDecr(key, expire.toSeconds, stableEndEpochSec, max).map(_ - 1)
+      }
       _ <-
         F.whenA(reqsRemaining < 0)(
           F.sleep(
             FiniteDuration(
               (stableEndEpochSec * 1000) - now.toMillis,
-              TimeUnit.MILLISECONDS)) >> limit(key, max, window))
+              TimeUnit.MILLISECONDS)) >> limit(key, max, window, mode))
     } yield ()
 
   private def stableEnd(now: FiniteDuration, window: FiniteDuration): Long =
@@ -74,10 +81,16 @@ class RedisRateLimiting[F[_], A](conn: RedisConnection[F])(implicit F: Async[F])
 
   private val nowF: F[FiniteDuration] = F.realTime
 
-  private def decr(key: String, endEpochSec: Long, max: Int): F[Long] = {
+  private def decr(key: String, expireSec: Long, endEpochSec: Long, max: Int): F[Long] = {
     val ops =
       (
-        RedisCommands.setnx[RedisTransaction](s"$key:$endEpochSec", max.toString()),
+        RedisCommands.set[RedisTransaction](
+          s"$key:$endEpochSec",
+          max.toString(),
+          RedisCommands
+            .SetOpts
+            .default
+            .copy(setSeconds = expireSec.some, setCondition = RedisCommands.Condition.Nx.some)),
         RedisCommands.decr[RedisTransaction](s"$key:$endEpochSec")
       ).mapN {
         case (_, i) =>
@@ -94,11 +107,43 @@ class RedisRateLimiting[F[_], A](conn: RedisConnection[F])(implicit F: Async[F])
     }
   }
 
+  private def noDecr(key: String, expireSec: Long, endEpochSec: Long, max: Int): F[Long] = {
+    val ops =
+      (
+        RedisCommands.set[RedisTransaction](
+          s"$key:$endEpochSec",
+          max.toString(),
+          RedisCommands
+            .SetOpts
+            .default
+            .copy(setSeconds = expireSec.some, setCondition = RedisCommands.Condition.Nx.some)),
+        RedisCommands.get[RedisTransaction](s"$key:$endEpochSec")
+      ).mapN {
+        case (_, os) =>
+          os.flatMap(_.toLongOption)
+            .getOrElse(sys.error(
+              s"Unexpected error getting rate limit key '$key:$endEpochSec' from redis: expected some long, got $os"))
+      }
+
+    ops.transact[F].run(conn).flatMap {
+      case RedisTransaction.TxResult.Success(value) => value.pure[F]
+      case RedisTransaction.TxResult.Aborted =>
+        Async[F].raiseError[Long](new Throwable("Transaction Aborted"))
+      case RedisTransaction.TxResult.Error(value) =>
+        Async[F].raiseError[Long](new Throwable(s"Transaction Raised Error $value"))
+
+    }
+  }
+
   private def set(key: String, expireSec: Long, endEpochSec: Long, i: Int): F[Unit] = {
     val op =
-      RedisCommands.set[Redis[F, *]](s"$key:$endEpochSec", i.toString(), RedisCommands.SetOpts.default.copy(setSeconds = expireSec.some)).void
+      RedisCommands
+        .set[Redis[F, *]](
+          s"$key:$endEpochSec",
+          i.toString(),
+          RedisCommands.SetOpts.default.copy(setSeconds = expireSec.some))
+        .void
 
     op.run(conn)
   }
-
 }

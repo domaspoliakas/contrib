@@ -42,9 +42,7 @@ import precog.contrib.ratelimit.RedisRateLimiting
  */
 
 class LocalRateLimitingSuite
-    extends RateLimitingSuite(
-      LocalRateLimiting[IO],
-      TestControl.executeEmbed(_))
+    extends RateLimitingSuite(LocalRateLimiting[IO], TestControl.executeEmbed(_))
 
 class RedisRateLimitingSuite
     extends RateLimitingSuite(
@@ -57,7 +55,7 @@ abstract class RateLimitingSuite(
     testControl: IO[Unit] => IO[Unit])
     extends munit.CatsEffectSuite {
 
-  val tinyDuration = FiniteDuration(60, TimeUnit.MILLISECONDS)
+  val tinyDuration = FiniteDuration(70, TimeUnit.MILLISECONDS)
   val windowDuration = FiniteDuration(2, TimeUnit.SECONDS)
 
   test("counting: sequence of limits works") {
@@ -187,8 +185,115 @@ abstract class RateLimitingSuite(
     }
   }
 
+  test("external: limit calls do not affect usage") {
+    testControl {
+      rateLimiting.use { rl =>
+        for {
+          signals <- rl.rateLimit("id", 1, windowDuration, RateLimiting.Mode.External)
+          _ <- sleepToBeginWindow
+          _ <- signals.limit
+          nowInit0 <- IO.realTime
+          _ <- signals.limit
+          nowInit1 <- IO.realTime
+          _ <- signals.limit
+          now0 <- IO.realTime
+          _ <- signals.limit
+          _ <- signals.limit
+          _ <- signals.limit
+          _ <- signals.limit
+          now1 <- IO.realTime
+        } yield {
+          assertInitiating("nowInit1 - nowInit0", nowInit1 - nowInit0)
+          assertInitiating("now0 - nowInit1", now0 - nowInit1)
+          assertTiny("now1 - now0", now1 - now0)
+        }
+      }
+    }
+  }
+
+  test("external: backoff works") {
+    testControl {
+      rateLimiting.use { rl =>
+        for {
+          signals <- rl.rateLimit("id", 4, windowDuration, RateLimiting.Mode.External)
+          _ <- sleepToBeginWindow
+          now0 <- IO.realTime
+          _ <- signals.backoff
+          _ <- signals.limit
+          now1 <- IO.realTime
+          _ <- signals.backoff
+          now2 <- IO.realTime
+          _ <- signals.limit
+          now3 <- IO.realTime
+        } yield {
+          assertWaitWindow("now1 - now0", now1 - now0, tiny = tinyDuration * 2)
+          assertTiny("now2 - now1", now2 - now1)
+          assertWaitWindow("now3 - now2", now3 - now2, tiny = tinyDuration * 2)
+        }
+      }
+    }
+  }
+
+  test("external: setUsage to max rate limits accordingly") {
+    testControl {
+      rateLimiting.use { rl =>
+        for {
+          signals <- rl.rateLimit("id", 10, windowDuration, RateLimiting.Mode.External)
+          _ <- sleepToBeginWindow
+          now0 <- IO.realTime
+          _ <- signals.setUsage(10)
+          _ <- signals.limit
+          now1 <- IO.realTime
+          _ <- signals.setUsage(10)
+          now2 <- IO.realTime
+          _ <- signals.limit
+          now3 <- IO.realTime
+        } yield {
+          assertWaitWindow("now1 - now0", now1 - now0, tiny = tinyDuration * 2)
+          assertTiny("now2 - now1", now2 - now1)
+          assertWaitWindow("now3 - now2", now3 - now2, tiny = tinyDuration * 2)
+        }
+      }
+    }
+  }
+
+  test("external: setUsage below max does not rate limit") {
+    testControl {
+      rateLimiting.use { rl =>
+        for {
+          signals <- rl.rateLimit("id", 3, windowDuration, RateLimiting.Mode.External)
+          _ <- sleepToBeginWindow
+          _ <- signals.limit
+          now0 <- IO.realTime
+          _ <- signals.limit
+          now1 <- IO.realTime
+          _ <- signals.setUsage(1)
+          _ <- signals.limit
+          _ <- signals.limit
+          now2 <- IO.realTime
+          _ <- signals.setUsage(2)
+          _ <- signals.limit
+          _ <- signals.limit
+          _ <- signals.limit
+          now3 <- IO.realTime
+          _ <- signals.setUsage(0)
+          _ <- signals.limit
+          _ <- signals.limit
+          _ <- signals.limit
+          now4 <- IO.realTime
+        } yield {
+          assertTiny("now1 - now0", now1 - now0)
+          assertTiny("now2 - now1", now2 - now1)
+          assertTiny("now3 - now2", now3 - now2)
+          assertTiny("now4 - now3", now4 - now3)
+        }
+      }
+    }
+  }
+  
   private def sleepToBeginWindow =
-    IO.realTime.flatMap(now => IO.sleep(stableEnd(now, windowDuration) - now + (tinyDuration / 5)))
+    IO.realTime
+      .flatMap(now => IO.sleep(stableEnd(now, windowDuration) - now + (tinyDuration / 5)))
 
   private def stableEnd(now: FiniteDuration, window: FiniteDuration): FiniteDuration = {
     FiniteDuration(
@@ -205,13 +310,16 @@ abstract class RateLimitingSuite(
       s"Assertion failed $s: $duration < ${windowDuration + tinyDuration}")
   }
 
-  def assertWaitWindow(s: String, duration: FiniteDuration) = {
+  def assertWaitWindow(
+      s: String,
+      duration: FiniteDuration,
+      tiny: FiniteDuration = tinyDuration) = {
     assert(
-      duration > (windowDuration - tinyDuration),
-      s"Assertion failed $s: $duration > ${windowDuration - tinyDuration}")
+      duration > (windowDuration - tiny),
+      s"Assertion failed $s: $duration > ${windowDuration - tiny}")
     assert(
-      duration < (windowDuration + tinyDuration),
-      s"Assertion failed $s: $duration < ${windowDuration + tinyDuration}")
+      duration < (windowDuration + tiny),
+      s"Assertion failed $s: $duration < ${windowDuration + tiny}")
   }
 
 }
