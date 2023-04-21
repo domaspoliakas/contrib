@@ -46,7 +46,7 @@ class LocalRateLimitingSuite
 
 class RedisRateLimitingSuite
     extends RateLimitingSuite(
-      RedisTestkit.connection.map(c => new RedisRateLimiting[IO, String](c)),
+      RedisTestkit.connection.map(RedisRateLimiting[IO](_)),
       identity(_)
     )
 
@@ -290,7 +290,7 @@ abstract class RateLimitingSuite(
       }
     }
   }
-  
+
   private def sleepToBeginWindow =
     IO.realTime
       .flatMap(now => IO.sleep(stableEnd(now, windowDuration) - now + (tinyDuration / 5)))

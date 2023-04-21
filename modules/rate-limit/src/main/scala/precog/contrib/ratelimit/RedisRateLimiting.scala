@@ -28,7 +28,7 @@ import io.chrisdavenport.rediculous.RedisTransaction
 import precog.contrib.ratelimit.RateLimiting.Mode.Counting
 import precog.contrib.ratelimit.RateLimiting.Mode.External
 
-class RedisRateLimiting[F[_], A](conn: RedisConnection[F])(implicit F: Async[F])
+class RedisRateLimiting[F[_]](conn: RedisConnection[F])(implicit F: Async[F])
     extends RateLimiting[F] {
 
   override def rateLimit(
@@ -146,4 +146,9 @@ class RedisRateLimiting[F[_], A](conn: RedisConnection[F])(implicit F: Async[F])
 
     op.run(conn)
   }
+}
+
+object RedisRateLimiting {
+  def apply[F[_]: Async](conn: RedisConnection[F]): RateLimiting[F] =
+    new RedisRateLimiting[F](conn)
 }
