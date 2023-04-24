@@ -19,7 +19,7 @@ package precog.contrib.ratelimit
 import java.util.concurrent.TimeUnit
 import scala.concurrent.duration.FiniteDuration
 
-import cats.effect.Async
+import cats.effect.Temporal
 import cats.syntax.all._
 import io.chrisdavenport.rediculous.Redis
 import io.chrisdavenport.rediculous.RedisCommands
@@ -28,7 +28,7 @@ import io.chrisdavenport.rediculous.RedisTransaction
 import precog.contrib.ratelimit.RateLimiting.Mode.Counting
 import precog.contrib.ratelimit.RateLimiting.Mode.External
 
-class RedisRateLimiting[F[_]](conn: RedisConnection[F])(implicit F: Async[F])
+class RedisRateLimiting[F[_]](conn: RedisConnection[F])(implicit F: Temporal[F])
     extends RateLimiting[F] {
 
   override def rateLimit(
@@ -95,9 +95,9 @@ class RedisRateLimiting[F[_]](conn: RedisConnection[F])(implicit F: Async[F])
     ops.transact[F].run(conn).flatMap {
       case RedisTransaction.TxResult.Success(value) => value.pure[F]
       case RedisTransaction.TxResult.Aborted =>
-        Async[F].raiseError[Long](new Throwable("Transaction Aborted"))
+        F.raiseError[Long](new Throwable("Transaction Aborted"))
       case RedisTransaction.TxResult.Error(value) =>
-        Async[F].raiseError[Long](new Throwable(s"Transaction Raised Error $value"))
+        F.raiseError[Long](new Throwable(s"Transaction Raised Error $value"))
 
     }
   }
@@ -118,13 +118,13 @@ class RedisRateLimiting[F[_]](conn: RedisConnection[F])(implicit F: Async[F])
     ops.transact[F].run(conn).flatMap {
       case RedisTransaction.TxResult.Success(os) =>
         os.flatMap(_.toLongOption)
-          .fold(Async[F].raiseError[Long](new Throwable(
+          .fold(F.raiseError[Long](new Throwable(
             s"Unexpected error getting rate limit key '$key:$endEpochSec' from redis: expected some long, got $os")))(
             _.pure[F])
       case RedisTransaction.TxResult.Aborted =>
-        Async[F].raiseError[Long](new Throwable("Transaction Aborted"))
+        F.raiseError[Long](new Throwable("Transaction Aborted"))
       case RedisTransaction.TxResult.Error(value) =>
-        Async[F].raiseError[Long](new Throwable(s"Transaction Raised Error $value"))
+        F.raiseError[Long](new Throwable(s"Transaction Raised Error $value"))
 
     }
   }
@@ -143,6 +143,6 @@ class RedisRateLimiting[F[_]](conn: RedisConnection[F])(implicit F: Async[F])
 }
 
 object RedisRateLimiting {
-  def apply[F[_]: Async](conn: RedisConnection[F]): RateLimiting[F] =
+  def apply[F[_]: Temporal](conn: RedisConnection[F]): RateLimiting[F] =
     new RedisRateLimiting[F](conn)
 }
