@@ -83,19 +83,14 @@ class RedisRateLimiting[F[_]](conn: RedisConnection[F])(implicit F: Async[F])
 
   private def decr(key: String, expireSec: Long, endEpochSec: Long, max: Int): F[Long] = {
     val ops =
-      (
-        RedisCommands.set[RedisTransaction](
-          s"$key:$endEpochSec",
-          max.toString(),
-          RedisCommands
-            .SetOpts
-            .default
-            .copy(setSeconds = expireSec.some, setCondition = RedisCommands.Condition.Nx.some)),
+      RedisCommands.set[RedisTransaction](
+        s"$key:$endEpochSec",
+        max.toString(),
+        RedisCommands
+          .SetOpts
+          .default
+          .copy(setSeconds = expireSec.some, setCondition = RedisCommands.Condition.Nx.some)) *>
         RedisCommands.decr[RedisTransaction](s"$key:$endEpochSec")
-      ).mapN {
-        case (_, i) =>
-          i
-      }
 
     ops.transact[F].run(conn).flatMap {
       case RedisTransaction.TxResult.Success(value) => value.pure[F]
@@ -109,24 +104,23 @@ class RedisRateLimiting[F[_]](conn: RedisConnection[F])(implicit F: Async[F])
 
   private def noDecr(key: String, expireSec: Long, endEpochSec: Long, max: Int): F[Long] = {
     val ops =
-      (
-        RedisCommands.set[RedisTransaction](
-          s"$key:$endEpochSec",
-          max.toString(),
-          RedisCommands
-            .SetOpts
-            .default
-            .copy(setSeconds = expireSec.some, setCondition = RedisCommands.Condition.Nx.some)),
-        RedisCommands.get[RedisTransaction](s"$key:$endEpochSec")
-      ).mapN {
-        case (_, os) =>
-          os.flatMap(_.toLongOption)
-            .getOrElse(sys.error(
-              s"Unexpected error getting rate limit key '$key:$endEpochSec' from redis: expected some long, got $os"))
-      }
+      RedisCommands.set[RedisTransaction](
+        s"$key:$endEpochSec",
+        max.toString(),
+        RedisCommands
+          .SetOpts
+          .default
+          .copy(
+            setSeconds = expireSec.some,
+            setCondition = RedisCommands.Condition.Nx.some)) *> RedisCommands
+        .get[RedisTransaction](s"$key:$endEpochSec")
 
     ops.transact[F].run(conn).flatMap {
-      case RedisTransaction.TxResult.Success(value) => value.pure[F]
+      case RedisTransaction.TxResult.Success(os) =>
+        os.flatMap(_.toLongOption)
+          .fold(Async[F].raiseError[Long](new Throwable(
+            s"Unexpected error getting rate limit key '$key:$endEpochSec' from redis: expected some long, got $os")))(
+            _.pure[F])
       case RedisTransaction.TxResult.Aborted =>
         Async[F].raiseError[Long](new Throwable("Transaction Aborted"))
       case RedisTransaction.TxResult.Error(value) =>
