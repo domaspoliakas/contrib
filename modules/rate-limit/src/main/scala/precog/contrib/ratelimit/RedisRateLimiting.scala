@@ -65,11 +65,11 @@ class RedisRateLimiting[F[_]](conn: RedisConnection[F])(implicit F: Temporal[F])
       stableEndEpochSec = stableEnd(now, window)
       expire = FiniteDuration(stableEndEpochSec + 1, TimeUnit.SECONDS) - now
       reqsRemaining <- mode match {
-        case Counting => decr(key, expire.toSeconds, stableEndEpochSec, max)
-        case External => noDecr(key, expire.toSeconds, stableEndEpochSec, max).map(_ - 1)
+        case Counting => decr(key, expire.toSeconds, stableEndEpochSec, max).map(_ + 1)
+        case External => noDecr(key, expire.toSeconds, stableEndEpochSec, max)
       }
       _ <-
-        F.whenA(reqsRemaining < 0)(
+        F.whenA(reqsRemaining <= 0)(
           F.sleep(
             FiniteDuration(
               (stableEndEpochSec * 1000) - now.toMillis,
