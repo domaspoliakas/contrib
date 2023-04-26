@@ -10,6 +10,10 @@ ThisBuild / scmInfo := Some(
 val CatsEffectVersion = "3.3.14"
 val Http4sVersion = "0.23.14"
 val Log4CatsVersion = "2.4.0"
+val MunitCatsEffectVersion = "1.0.7"
+val MunitVersion = "0.7.29"
+val RediculousVersion = "0.5.0"
+val TestContainersVersion = "0.40.9"
 
 lazy val root =
   project.in(file(".")).settings(noPublishSettings).aggregate(rateLimit, http4sLogger)
@@ -19,7 +23,12 @@ lazy val rateLimit = project
   .settings(name := "contrib-ratelimit")
   .settings(
     libraryDependencies ++= Seq(
-      "org.typelevel" %% "cats-effect" % CatsEffectVersion
+      "org.typelevel" %% "cats-effect" % CatsEffectVersion,
+      "io.chrisdavenport" %% "rediculous" % RediculousVersion,
+      "com.dimafeng" %% "testcontainers-scala-core" % TestContainersVersion % Test,
+      "org.scalameta" %% "munit" % MunitVersion % Test,
+      "org.typelevel" %% "cats-effect-testkit" % CatsEffectVersion % Test,
+      "org.typelevel" %% "munit-cats-effect-3" % MunitCatsEffectVersion % Test
     )
   )
 
