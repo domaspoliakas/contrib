@@ -27,8 +27,14 @@ import io.chrisdavenport.rediculous.RedisConnection
 import io.chrisdavenport.rediculous.RedisTransaction
 import precog.contrib.ratelimit.RateLimiting.Mode.Counting
 import precog.contrib.ratelimit.RateLimiting.Mode.External
+import retry.RetryDetails
+import retry.RetryPolicy
 
-class RedisRateLimiting[F[_]](conn: RedisConnection[F])(implicit F: Temporal[F])
+class RedisRateLimiting[F[_]](
+    conn: F[RedisConnection[F]],
+    refreshConn: F[Unit],
+    retryPolicy: RetryPolicy[F],
+    onError: (Throwable, RetryDetails) => F[Unit])(implicit F: Temporal[F])
     extends RateLimiting[F] {
 
   override def rateLimit(
@@ -92,7 +98,7 @@ class RedisRateLimiting[F[_]](conn: RedisConnection[F])(implicit F: Temporal[F])
           .copy(setSeconds = expireSec.some, setCondition = RedisCommands.Condition.Nx.some)) *>
         RedisCommands.decr[RedisTransaction](s"$key:$endEpochSec")
 
-    ops.transact[F].run(conn).flatMap {
+    doRetry(conn.flatMap(ops.transact[F].run(_))).flatMap {
       case RedisTransaction.TxResult.Success(value) => value.pure[F]
       case RedisTransaction.TxResult.Aborted =>
         F.raiseError[Long](new Throwable("Transaction Aborted"))
@@ -115,7 +121,7 @@ class RedisRateLimiting[F[_]](conn: RedisConnection[F])(implicit F: Temporal[F])
             setCondition = RedisCommands.Condition.Nx.some)) *> RedisCommands
         .get[RedisTransaction](s"$key:$endEpochSec")
 
-    ops.transact[F].run(conn).flatMap {
+    doRetry(conn.flatMap(ops.transact[F].run(_))).flatMap {
       case RedisTransaction.TxResult.Success(os) =>
         os.flatMap(_.toLongOption)
           .fold(F.raiseError[Long](new Throwable(
@@ -138,11 +144,21 @@ class RedisRateLimiting[F[_]](conn: RedisConnection[F])(implicit F: Temporal[F])
           RedisCommands.SetOpts.default.copy(setSeconds = expireSec.some))
         .void
 
-    op.run(conn)
+    doRetry(conn.flatMap(op.run(_)))
   }
+
+  private def doRetry[A](fa: F[A]): F[A] =
+    retry.retryingOnAllErrors[A](
+      policy = retryPolicy,
+      onError = (t: Throwable, d) => onError(t, d) >> refreshConn
+    )(fa)
 }
 
 object RedisRateLimiting {
-  def apply[F[_]: Temporal](conn: RedisConnection[F]): RateLimiting[F] =
-    new RedisRateLimiting[F](conn)
+  def apply[F[_]: Temporal](
+      conn: F[RedisConnection[F]],
+      refreshConn: F[Unit],
+      retryPolicy: RetryPolicy[F],
+      onError: (Throwable, RetryDetails) => F[Unit]): RateLimiting[F] =
+    new RedisRateLimiting[F](conn, refreshConn, retryPolicy, onError)
 }

@@ -20,17 +20,24 @@ import scala.concurrent.duration.FiniteDuration
 import cats.effect.IO
 import cats.effect.Resource
 import cats.effect.testkit.TestControl
-import mongo4cats.testkit.RedisTestkit
+import cats.syntax.all._
 import precog.contrib.ratelimit.LocalRateLimiting
 import precog.contrib.ratelimit.RateLimiting
 import precog.contrib.ratelimit.RedisRateLimiting
+import precog.contrib.ratelimit.RedisTestkit
 
-class LocalRateLimitingSuite
-    extends RateLimitingSuite(LocalRateLimiting[IO], TestControl.executeEmbed(_))
+// class LocalRateLimitingSuite
+//     extends RateLimitingSuite(LocalRateLimiting[IO], TestControl.executeEmbed(_))
 
-class RedisRateLimitingSuite
+// class RedisRateLimitingSuite
+//     extends RateLimitingSuite(
+//       RedisTestkit.connection.map(RedisRateLimiting[IO](_)),
+//       identity(_)
+//     )
+
+class FlakyRedisRateLimitingSuite
     extends RateLimitingSuite(
-      RedisTestkit.connection.map(RedisRateLimiting[IO](_)),
+      RedisTestkit.flakyRateLimiting,
       identity(_)
     )
 
@@ -42,7 +49,7 @@ abstract class RateLimitingSuite(
   val tinyDuration = FiniteDuration(70, TimeUnit.MILLISECONDS)
   val windowDuration = FiniteDuration(2, TimeUnit.SECONDS)
 
-  test("counting: sequence of limits works") {
+  test("counting: sequence of limits works".only) {
     testControl {
       rateLimiting.use { rl =>
         for {

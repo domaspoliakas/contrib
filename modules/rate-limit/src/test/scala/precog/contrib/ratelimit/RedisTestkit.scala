@@ -14,9 +14,10 @@
  * limitations under the License.
  */
 
-package mongo4cats.testkit
+package precog.contrib.ratelimit
 
-import java.io.File
+import java.util.concurrent.TimeUnit
+import scala.concurrent.duration.FiniteDuration
 
 import cats.effect.Deferred
 import cats.effect.IO
@@ -25,41 +26,104 @@ import cats.effect.kernel.Resource
 import cats.syntax.all._
 import com.comcast.ip4s.Host
 import com.comcast.ip4s.Port
+import com.dimafeng.testcontainers.GenericContainer
 import io.chrisdavenport.rediculous.RedisConnection
+import retry._
 
 object RedisTestkit {
 
-  def sharedContainer =
-    sharedResource(
-      com
-        .dimafeng
-        .testcontainers
-        .DockerComposeContainer(
-          com
-            .dimafeng
-            .testcontainers
-            .DockerComposeContainer
-            .ComposeFile(new File(
-              getClass.getClassLoader.getResource("docker-compose.yml").getPath).asLeft),
-          Seq(com.dimafeng.testcontainers.ExposedService("redis", 6379))
-        ))
+  val redisContainer = GenericContainer(
+    dockerImage = "redis:7.0.10",
+    exposedPorts = List(6379)
+  )
+
+  def container = Resource.make {
+    val c = redisContainer
+    IO.delay(c.start()).as(c)
+  }(c => IO.delay(c.stop()))
+
+  def containerConn(c: GenericContainer): RedisConnection.PooledConnectionBuilder[IO] = {
+    val serviceHost = c.containerIpAddress
+    val servicePort = c.mappedPort(6379)
+    RedisConnection
+      .pool[IO]
+      .withHost(
+        Host
+          .fromString(serviceHost)
+          .getOrElse(sys.error(s"Could not create host from '$serviceHost'")))
+      .withPort(
+        Port
+          .fromInt(servicePort)
+          .getOrElse(sys.error(s"Could not create port from '$servicePort")))
+    // .build
+
+  }
 
   def connection: Resource[IO, RedisConnection[IO]] =
-    sharedContainer.flatMap { c =>
-      val serviceHost = c.getServiceHost("redis", 6379)
-      val servicePort = c.getServicePort("redis", 6379)
-      RedisConnection
-        .direct[IO]
-        .withHost(
-          Host
-            .fromString(serviceHost)
-            .getOrElse(sys.error(s"Could not create host from '$serviceHost'")))
-        .withPort(
-          Port
-            .fromInt(servicePort)
-            .getOrElse(sys.error(s"Could not create port from '$servicePort")))
-        .build
+    container.flatMap { c => containerConn(c).build }
+
+  def flakify(c: GenericContainer): IO[Unit] =
+    IO.sleep(FiniteDuration(300, TimeUnit.MILLISECONDS)) >> IO.println("stopping") >> IO.delay(
+      c.stop()) >> IO.println("stopped") >>
+      IO.sleep(FiniteDuration(300, TimeUnit.MILLISECONDS)) >> IO.println("starting") >> IO
+        .delay(
+          c.start()
+        ) >> IO.println("started") // >> flakify(c)
+
+  def flakyBuilder: Resource[IO, RedisConnection.PooledConnectionBuilder[IO]] = {
+    container.flatMap { c =>
+      val b = containerConn(c)
+      Resource.eval(flakify(c)).as(b)
+    // val conn0 = containerConn(c).flatMap { conn => flakify(c).background.as(conn) }
+    // conn0
+    // retryConn(conn0)
     }
+  }
+
+  def flaky(b: RedisConnection.PooledConnectionBuilder[IO])
+      : Resource[IO, Ref[IO, RedisConnection[IO]]] = {
+    b.build.flatMap(c => Resource.eval(Ref.of[IO, RedisConnection[IO]](c)))
+    // flakyBuilder.flatMap { b =>
+    //   b.build
+    // }
+  }
+
+  def flakyRateLimiting: Resource[IO, RateLimiting[IO]] = {
+    flakyBuilder.flatMap { builder =>
+      println("builder")
+      flaky(builder).map { ref =>
+        println("ref")
+        RedisRateLimiting[IO](
+          IO.println("getting connection") >> ref.get,
+          IO.println("refreshing connection") >>
+            // We need to create another builder on refresh??
+            // This seems weird, I'd expect pooled/queued to give access to some intermediate structure
+            // so that we can take e.g. another conn from the pool
+            containerConn(redisContainer)
+              .build
+              .flatMap(c => Resource.eval(ref.set(c)))
+              .allocated
+              .map(_._1),
+          RetryPolicies.limitRetries(15),
+          (t: Throwable, d: RetryDetails) => IO.println(s"rt $t $d")
+        )
+      }
+    }
+  }
+
+  def onErr(s: Throwable, d: RetryDetails): X[Unit] =
+    Resource.eval(IO.println(s"XXX Got error $d $s "))
+
+  type X[A] = Resource[IO, A]
+
+  def retryConn(conn: Resource[IO, RedisConnection[IO]]) = {
+    val y: RetryPolicy[X] = RetryPolicies.limitRetries[X](5)
+    val xx = retry.retryingOnAllErrors[RedisConnection[IO]](
+      policy = y,
+      onError = (s, d) => onErr(s, d)
+    )(conn)
+    xx
+  }
 
   // //////
 
