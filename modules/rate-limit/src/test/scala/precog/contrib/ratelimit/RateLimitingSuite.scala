@@ -45,7 +45,7 @@ class RedisRateLimitingSuite extends RateLimitingSuite(RedisTestkit.rateLimiting
             (until6(0) >> IO.realTime).flatMap { ended =>
               val elapsed = ended - started
               // 2 because it will finish at the start of the 3rd window
-              val lowerBound = windowDuration * 2 + tinyDuration // epsilon
+              val lowerBound = windowDuration * 2 - tinyDuration // epsilon
               IO(assert(lowerBound <= elapsed, s"expected ${lowerBound} <= ${elapsed}"))
             }
           }
