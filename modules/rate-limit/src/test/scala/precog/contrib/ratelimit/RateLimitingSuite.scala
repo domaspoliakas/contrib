@@ -14,32 +14,45 @@
  * limitations under the License.
  */
 
+package precog.contrib.ratelimit
+
 import java.util.concurrent.TimeUnit
 import scala.concurrent.duration.FiniteDuration
 
 import cats.effect.IO
 import cats.effect.Resource
 import cats.effect.testkit.TestControl
-import cats.syntax.all._
 import precog.contrib.ratelimit.LocalRateLimiting
 import precog.contrib.ratelimit.RateLimiting
-import precog.contrib.ratelimit.RedisRateLimiting
 import precog.contrib.ratelimit.RedisTestkit
 
-// class LocalRateLimitingSuite
-//     extends RateLimitingSuite(LocalRateLimiting[IO], TestControl.executeEmbed(_))
+class LocalRateLimitingSuite
+    extends RateLimitingSuite(LocalRateLimiting[IO], TestControl.executeEmbed(_))
 
-// class RedisRateLimitingSuite
-//     extends RateLimitingSuite(
-//       RedisTestkit.connection.map(RedisRateLimiting[IO](_)),
-//       identity(_)
-//     )
+class RedisRateLimitingSuite extends RateLimitingSuite(RedisTestkit.rateLimiting, identity) {
 
-class FlakyRedisRateLimitingSuite
-    extends RateLimitingSuite(
-      RedisTestkit.flakyRateLimiting,
-      identity(_)
-    )
+  test("redis: recovers from network failure") {
+    RedisTestkit.flakyRateLimiting.use { rl =>
+      rl.rateLimit("flaky-id", 2, windowDuration, RateLimiting.Mode.Counting).flatMap {
+        signals =>
+          def until6(i: Int): IO[Unit] =
+            if (i < 6)
+              signals.limit >> until6(i + 1)
+            else
+              IO.unit
+
+          (sleepToBeginWindow >> IO.realTime).flatMap { started =>
+            (until6(0) >> IO.realTime).flatMap { ended =>
+              val elapsed = ended - started
+              // 2 because it will finish at the start of the 3rd window
+              val lowerBound = windowDuration * 2
+              IO(assert(lowerBound <= elapsed, s"expected ${lowerBound} <= ${elapsed}"))
+            }
+          }
+      }
+    }
+  }
+}
 
 abstract class RateLimitingSuite(
     rateLimiting: Resource[IO, RateLimiting[IO]],
@@ -49,7 +62,7 @@ abstract class RateLimitingSuite(
   val tinyDuration = FiniteDuration(70, TimeUnit.MILLISECONDS)
   val windowDuration = FiniteDuration(2, TimeUnit.SECONDS)
 
-  test("counting: sequence of limits works".only) {
+  test("counting: sequence of limits works") {
     testControl {
       rateLimiting.use { rl =>
         for {
@@ -282,7 +295,7 @@ abstract class RateLimitingSuite(
     }
   }
 
-  private def sleepToBeginWindow =
+  def sleepToBeginWindow =
     IO.realTime
       .flatMap(now => IO.sleep(stableEnd(now, windowDuration) - now + (tinyDuration / 5)))
 

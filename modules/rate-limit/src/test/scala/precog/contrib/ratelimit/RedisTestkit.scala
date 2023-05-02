@@ -16,35 +16,49 @@
 
 package precog.contrib.ratelimit
 
-import java.util.concurrent.TimeUnit
-import scala.concurrent.duration.FiniteDuration
+import java.net.InetSocketAddress
+import java.net.ServerSocket
+import scala.concurrent.duration._
 
-import cats.effect.Deferred
 import cats.effect.IO
-import cats.effect.Ref
-import cats.effect.kernel.Resource
+import cats.effect.Resource
+import cats.effect.std.Random
+import cats.effect.syntax.all._
 import cats.syntax.all._
 import com.comcast.ip4s.Host
 import com.comcast.ip4s.Port
-import com.dimafeng.testcontainers.GenericContainer
+import com.dimafeng.testcontainers.FixedHostPortGenericContainer
+import com.dimafeng.testcontainers.SingleContainer
 import io.chrisdavenport.rediculous.RedisConnection
 import retry._
 
 object RedisTestkit {
 
-  val redisContainer = GenericContainer(
-    dockerImage = "redis:7.0.10",
-    exposedPorts = List(6379)
-  )
+  val RedisPort: Int = 6379
 
-  def container = Resource.make {
-    val c = redisContainer
-    IO.delay(c.start()).as(c)
-  }(c => IO.delay(c.stop()))
+  val freeEphemeralPort: IO[Int] =
+    IO(new ServerSocket).bracket(ss =>
+      IO.blocking(ss.bind(new InetSocketAddress(0))) >> IO(ss.getLocalPort))(ss =>
+      IO.blocking(ss.close))
 
-  def containerConn(c: GenericContainer): RedisConnection.PooledConnectionBuilder[IO] = {
+  val redisContainer: IO[SingleContainer[_]] =
+    freeEphemeralPort.map { hostPort =>
+      FixedHostPortGenericContainer(
+        imageName = "redis:7.0.11",
+        command = Seq("redis-server", "--appendonly", "yes", "--appendfsync", "always"),
+        exposedContainerPort = RedisPort,
+        exposedHostPort = hostPort
+      )
+    }
+
+  def container: Resource[IO, SingleContainer[_]] =
+    Resource.make(redisContainer.flatTap(c => IO.blocking(c.start())))(c =>
+      IO.blocking(c.stop()))
+
+  def containerConnection(c: SingleContainer[_]): Resource[IO, RedisConnection[IO]] = {
     val serviceHost = c.containerIpAddress
-    val servicePort = c.mappedPort(6379)
+    val servicePort = c.mappedPort(RedisPort)
+
     RedisConnection
       .pool[IO]
       .withHost(
@@ -55,99 +69,48 @@ object RedisTestkit {
         Port
           .fromInt(servicePort)
           .getOrElse(sys.error(s"Could not create port from '$servicePort")))
-    // .build
-
+      .build
   }
 
   def connection: Resource[IO, RedisConnection[IO]] =
-    container.flatMap { c => containerConn(c).build }
+    container.flatMap(containerConnection)
 
-  def flakify(c: GenericContainer): IO[Unit] =
-    IO.sleep(FiniteDuration(300, TimeUnit.MILLISECONDS)) >> IO.println("stopping") >> IO.delay(
-      c.stop()) >> IO.println("stopped") >>
-      IO.sleep(FiniteDuration(300, TimeUnit.MILLISECONDS)) >> IO.println("starting") >> IO
-        .delay(
-          c.start()
-        ) >> IO.println("started") // >> flakify(c)
-
-  def flakyBuilder: Resource[IO, RedisConnection.PooledConnectionBuilder[IO]] = {
-    container.flatMap { c =>
-      val b = containerConn(c)
-      Resource.eval(flakify(c)).as(b)
-    // val conn0 = containerConn(c).flatMap { conn => flakify(c).background.as(conn) }
-    // conn0
-    // retryConn(conn0)
+  def rateLimiting: Resource[IO, RateLimiting[IO]] =
+    connection.map { rconn =>
+      RedisRateLimiting[IO](rconn, RetryPolicies.alwaysGiveUp, (_, _) => IO.unit)
     }
-  }
 
-  def flaky(b: RedisConnection.PooledConnectionBuilder[IO])
-      : Resource[IO, Ref[IO, RedisConnection[IO]]] = {
-    b.build.flatMap(c => Resource.eval(Ref.of[IO, RedisConnection[IO]](c)))
-    // flakyBuilder.flatMap { b =>
-    //   b.build
-    // }
-  }
+  def flakify(c: SingleContainer[_]): Resource[IO, Unit] =
+    Random.scalaUtilRandom[IO].toResource.flatMap { rnd =>
+      val restart =
+        IO.blocking(c.dockerClient.restartContainerCmd(c.containerId).exec())
 
-  def flakyRateLimiting: Resource[IO, RateLimiting[IO]] = {
-    flakyBuilder.flatMap { builder =>
-      println("builder")
-      flaky(builder).map { ref =>
-        println("ref")
-        RedisRateLimiting[IO](
-          IO.println("getting connection") >> ref.get,
-          IO.println("refreshing connection") >>
-            // We need to create another builder on refresh??
-            // This seems weird, I'd expect pooled/queued to give access to some intermediate structure
-            // so that we can take e.g. another conn from the pool
-            containerConn(redisContainer)
-              .build
-              .flatMap(c => Resource.eval(ref.set(c)))
-              .allocated
-              .map(_._1),
-          RetryPolicies.limitRetries(15),
-          (t: Throwable, d: RetryDetails) => IO.println(s"rt $t $d")
-        )
-      }
+      val disrupt =
+        rnd
+          .betweenInt(250, 1000)
+          .flatMap { tout =>
+            if ((tout % 20) > 16)
+              //IO.println(s"RESTART ${c.containerId}") >>
+              restart >>
+                IO.sleep(tout.millis)
+            else
+              IO.sleep(tout.millis)
+          }
+          .foreverM
+
+      (IO.sleep(500.millis) >> disrupt).background.void
     }
-  }
 
-  def onErr(s: Throwable, d: RetryDetails): X[Unit] =
-    Resource.eval(IO.println(s"XXX Got error $d $s "))
+  def flakyConnection: Resource[IO, RedisConnection[IO]] =
+    container.flatMap { c => flakify(c) >> containerConnection(c) }
 
-  type X[A] = Resource[IO, A]
-
-  def retryConn(conn: Resource[IO, RedisConnection[IO]]) = {
-    val y: RetryPolicy[X] = RetryPolicies.limitRetries[X](5)
-    val xx = retry.retryingOnAllErrors[RedisConnection[IO]](
-      policy = y,
-      onError = (s, d) => onErr(s, d)
-    )(conn)
-    xx
-  }
-
-  // //////
-
-  // Normally we'd want to stop the container after the suite
-  // However, we're using the same container in multiple suites
-  // Following the workaround here we simply don't stop the container
-  // https://github.com/testcontainers/testcontainers-scala/issues/160
-  def sharedResource[C <: com.dimafeng.testcontainers.DockerComposeContainer](
-      containerDefinition: C
-  ): Resource[IO, C] = {
-    val readyDeferred = Deferred.unsafe[IO, Unit]
-    val refContainer = Ref.unsafe[IO, Option[C]](None)
-
-    Resource.eval(
-      refContainer
-        .modify[(Boolean, C)] {
-          case None => (Some(containerDefinition), (true, containerDefinition))
-          case Some(existing) => (Some(existing), (false, existing))
-        }
-        .flatMap {
-          case (true, c) => IO.delay(c.start()) >> readyDeferred.complete(()).as(c)
-          case (false, c) => readyDeferred.get >> IO.pure(c)
-        }
-    )
-  }
-
+  def flakyRateLimiting: Resource[IO, RateLimiting[IO]] =
+    flakyConnection.map { rconn =>
+      RedisRateLimiting[IO](
+        rconn,
+        RetryPolicies.limitRetries[IO](10) join RetryPolicies.constantDelay(250.millis),
+        (_, _) => IO.unit
+        //(t: Throwable, d: RetryDetails) => IO.println(s"  RETRY $t $d")
+      )
+    }
 }
