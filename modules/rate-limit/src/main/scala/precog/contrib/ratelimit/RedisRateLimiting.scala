@@ -16,11 +16,12 @@
 
 package precog.contrib.ratelimit
 
-import java.util.concurrent.TimeUnit
-import scala.concurrent.duration.FiniteDuration
+import scala.concurrent.duration._
 
+import cats.Applicative
 import cats.effect.Temporal
 import cats.syntax.all._
+import cats.~>
 import io.chrisdavenport.rediculous.Redis
 import io.chrisdavenport.rediculous.RedisCommands
 import io.chrisdavenport.rediculous.RedisConnection
@@ -30,135 +31,119 @@ import precog.contrib.ratelimit.RateLimiting.Mode.External
 import retry.RetryDetails
 import retry.RetryPolicy
 
-class RedisRateLimiting[F[_]](
-    conn: F[RedisConnection[F]],
-    refreshConn: F[Unit],
-    retryPolicy: RetryPolicy[F],
-    onError: (Throwable, RetryDetails) => F[Unit])(implicit F: Temporal[F])
-    extends RateLimiting[F] {
-
-  override def rateLimit(
-      key: String,
-      max: Int,
-      window: FiniteDuration,
-      mode: RateLimiting.Mode): F[RateLimiting.Signals[F]] =
-    RateLimiting
-      .Signals[F](
-        limit(key, max, window, mode),
-        backoff(key, max, window),
-        setWindowUsage(key, max, window))
-      .pure[F]
-
-  private def setWindowUsage(key: String, max: Int, window: FiniteDuration)(
-      usage: Int): F[Unit] =
-    for {
-      now <- nowF
-      stableEndEpochSec = stableEnd(now, window)
-      expire = FiniteDuration(stableEndEpochSec + 1, TimeUnit.SECONDS) - now
-      _ <- set(key, expire.toSeconds, stableEndEpochSec, max - usage)
-    } yield ()
-
-  private def backoff(key: String, max: Int, window: FiniteDuration): F[Unit] =
-    setWindowUsage(key, max, window)(max)
-
-  private def limit(
-      key: String,
-      max: Int,
-      window: FiniteDuration,
-      mode: RateLimiting.Mode): F[Unit] =
-    for {
-      now <- nowF
-      stableEndEpochSec = stableEnd(now, window)
-      expire = FiniteDuration(stableEndEpochSec + 1, TimeUnit.SECONDS) - now
-      reqsRemaining <- mode match {
-        case Counting => decr(key, expire.toSeconds, stableEndEpochSec, max).map(_ + 1)
-        case External => noDecr(key, expire.toSeconds, stableEndEpochSec, max)
-      }
-      _ <-
-        F.whenA(reqsRemaining <= 0)(
-          F.sleep(
-            FiniteDuration(
-              (stableEndEpochSec * 1000) - now.toMillis,
-              TimeUnit.MILLISECONDS)) >> limit(key, max, window, mode))
-    } yield ()
-
-  private def stableEnd(now: FiniteDuration, window: FiniteDuration): Long =
-    (now.toSeconds / window.toSeconds + 1) * window.toSeconds
-
-  private val nowF: F[FiniteDuration] = F.realTime
-
-  private def decr(key: String, expireSec: Long, endEpochSec: Long, max: Int): F[Long] = {
-    val ops =
-      RedisCommands.set[RedisTransaction](
-        s"$key:$endEpochSec",
-        max.toString(),
-        RedisCommands
-          .SetOpts
-          .default
-          .copy(setSeconds = expireSec.some, setCondition = RedisCommands.Condition.Nx.some)) *>
-        RedisCommands.decr[RedisTransaction](s"$key:$endEpochSec")
-
-    doRetry(conn.flatMap(ops.transact[F].run(_))).flatMap {
-      case RedisTransaction.TxResult.Success(value) => value.pure[F]
-      case RedisTransaction.TxResult.Aborted =>
-        F.raiseError[Long](new Throwable("Transaction Aborted"))
-      case RedisTransaction.TxResult.Error(value) =>
-        F.raiseError[Long](new Throwable(s"Transaction Raised Error $value"))
-
-    }
-  }
-
-  private def noDecr(key: String, expireSec: Long, endEpochSec: Long, max: Int): F[Long] = {
-    val ops =
-      RedisCommands.set[RedisTransaction](
-        s"$key:$endEpochSec",
-        max.toString(),
-        RedisCommands
-          .SetOpts
-          .default
-          .copy(
-            setSeconds = expireSec.some,
-            setCondition = RedisCommands.Condition.Nx.some)) *> RedisCommands
-        .get[RedisTransaction](s"$key:$endEpochSec")
-
-    doRetry(conn.flatMap(ops.transact[F].run(_))).flatMap {
-      case RedisTransaction.TxResult.Success(os) =>
-        os.flatMap(_.toLongOption)
-          .fold(F.raiseError[Long](new Throwable(
-            s"Unexpected error getting rate limit key '$key:$endEpochSec' from redis: expected some long, got $os")))(
-            _.pure[F])
-      case RedisTransaction.TxResult.Aborted =>
-        F.raiseError[Long](new Throwable("Transaction Aborted"))
-      case RedisTransaction.TxResult.Error(value) =>
-        F.raiseError[Long](new Throwable(s"Transaction Raised Error $value"))
-
-    }
-  }
-
-  private def set(key: String, expireSec: Long, endEpochSec: Long, i: Int): F[Unit] = {
-    val op =
-      RedisCommands
-        .set[Redis[F, *]](
-          s"$key:$endEpochSec",
-          i.toString(),
-          RedisCommands.SetOpts.default.copy(setSeconds = expireSec.some))
-        .void
-
-    doRetry(conn.flatMap(op.run(_)))
-  }
-
-  private def doRetry[A](fa: F[A]): F[A] =
-    retry.retryingOnAllErrors[A](
-      policy = retryPolicy,
-      onError = (t: Throwable, d) => onError(t, d) >> refreshConn
-    )(fa)
-}
-
 object RedisRateLimiting {
   def apply[F[_]: Temporal](
-      conn: F[RedisConnection[F]],
-      refreshConn: F[Unit],
+      connection: RedisConnection[F],
       retryPolicy: RetryPolicy[F],
       onError: (Throwable, RetryDetails) => F[Unit]): RateLimiting[F] =
-    new RedisRateLimiting[F](conn, refreshConn, retryPolicy, onError)
+    new RateLimiting[F] {
+      val executeRetrying: Redis[F, *] ~> F =
+        λ[Redis[F, *] ~> F] { red =>
+          retry.retryingOnAllErrors(retryPolicy, onError)(red.run(connection))
+        }
+
+      def rateLimit(
+          id: String,
+          max: Int,
+          window: FiniteDuration,
+          mode: RateLimiting.Mode): F[RateLimiting.Signals[F]] =
+        signals[F](id, max, window, mode).mapK(executeRetrying).pure[F]
+    }
+
+  def signals[F[_]](key: String, max: Int, window: FiniteDuration, mode: RateLimiting.Mode)(
+      implicit F: Temporal[F]): RateLimiting.Signals[Redis[F, *]] = {
+
+    val nowF: Redis[F, FiniteDuration] =
+      Redis.liftF(F.realTime)
+
+    def containingWindowEndsAt(ts: FiniteDuration, window: FiniteDuration): Long =
+      (ts.toSeconds / window.toSeconds + 1) * window.toSeconds
+
+    def bucket(endsAtSecs: Long): String =
+      s"${key}:${endsAtSecs}"
+
+    def transact[A](txn: RedisTransaction[A]): Redis[F, A] =
+      txn.transact[F].flatMap {
+        case RedisTransaction.TxResult.Success(value) =>
+          value.pure[Redis[F, *]]
+        case RedisTransaction.TxResult.Aborted =>
+          Redis.liftF(F.raiseError[A](new Throwable("Transaction Aborted")))
+        case RedisTransaction.TxResult.Error(value) =>
+          Redis.liftF(F.raiseError[A](new Throwable(s"Transaction Failed: $value")))
+      }
+
+    def createBucketIfNotExists(
+        endsAtSecs: Long,
+        expiresIn: FiniteDuration): RedisTransaction[Unit] =
+      RedisCommands
+        .set[RedisTransaction](
+          bucket(endsAtSecs),
+          max.toString,
+          RedisCommands
+            .SetOpts
+            .default
+            .copy(
+              setSeconds = Some(expiresIn.toSeconds),
+              setCondition = Some(RedisCommands.Condition.Nx))
+        )
+        .void
+
+    def decrementAndGetRemaining(endsAtSecs: Long, expiresIn: FiniteDuration): Redis[F, Long] =
+      transact(
+        createBucketIfNotExists(endsAtSecs, expiresIn) *>
+          RedisCommands.decr[RedisTransaction](bucket(endsAtSecs)))
+
+    def getRemaining(endsAtSecs: Long, expiresIn: FiniteDuration): Redis[F, Long] =
+      transact(
+        createBucketIfNotExists(endsAtSecs, expiresIn) *>
+          RedisCommands.get[RedisTransaction](bucket(endsAtSecs))
+      ).flatMap { response =>
+        Redis.liftF {
+          response
+            .flatMap(_.toLongOption)
+            .liftTo[F](new Throwable(s"Unexpected error getting rate limit bucket '${bucket(
+              endsAtSecs)}' from redis: expected some long, got ${response}"))
+        }
+      }
+
+    def setRemaining(
+        endsAtSecs: Long,
+        expiresIn: FiniteDuration,
+        remaining: Int): Redis[F, Unit] =
+      RedisCommands
+        .set[Redis[F, *]](
+          bucket(endsAtSecs),
+          remaining.toString,
+          RedisCommands.SetOpts.default.copy(setSeconds = Some(expiresIn.toSeconds)))
+        .void
+
+    def setWindowUsage(usage: Int): Redis[F, Unit] =
+      nowF.flatMap { now =>
+        val currentBucketEndsAt = containingWindowEndsAt(now, window)
+        val currentBucketExpiresIn = (currentBucketEndsAt + 1).seconds - now
+        setRemaining(currentBucketEndsAt, currentBucketExpiresIn, max - usage)
+      }
+
+    val backoff: Redis[F, Unit] = setWindowUsage(max)
+
+    lazy val limit: Redis[F, Unit] =
+      nowF.flatMap { now =>
+        val currentBucketEndsAt = containingWindowEndsAt(now, window)
+        val currentBucketExpiresIn = (currentBucketEndsAt + 1).seconds - now
+
+        val reqsRemaining = mode match {
+          case Counting =>
+            decrementAndGetRemaining(currentBucketEndsAt, currentBucketExpiresIn).map(_ + 1)
+          case External => getRemaining(currentBucketEndsAt, currentBucketExpiresIn)
+        }
+
+        reqsRemaining.flatMap { remaining =>
+          Applicative[Redis[F, *]].whenA(remaining <= 0) {
+            Redis.liftF(F.sleep(currentBucketExpiresIn - 1.second)) >> limit
+          }
+        }
+      }
+
+    RateLimiting.Signals(limit = limit, backoff = backoff, setWindowUsage)
+  }
 }

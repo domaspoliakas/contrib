@@ -18,6 +18,8 @@ package precog.contrib.ratelimit
 
 import scala.concurrent.duration.FiniteDuration
 
+import cats.~>
+
 /**
  * Provides the capability to rate-limit effects
  */
@@ -75,7 +77,10 @@ object RateLimiting {
    *   allows setting the window usage, allowing an external source (e.g an API) to dictate
    *   limits
    */
-  final case class Signals[F[_]](limit: F[Unit], backoff: F[Unit], setUsage: Int => F[Unit])
+  final case class Signals[F[_]](limit: F[Unit], backoff: F[Unit], setUsage: Int => F[Unit]) {
+    def mapK[G[_]](f: F ~> G): Signals[G] =
+      Signals(f(limit), f(backoff), setUsage.andThen(f(_)))
+  }
 
   def modifyRateLimitId[F[_]](f: String => String)(rl: RateLimiting[F]): RateLimiting[F] =
     new RateLimiting[F] {
