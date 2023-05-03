@@ -14,76 +14,103 @@
  * limitations under the License.
  */
 
-package mongo4cats.testkit
+package precog.contrib.ratelimit
 
-import java.io.File
+import java.net.InetSocketAddress
+import java.net.ServerSocket
+import scala.concurrent.duration._
 
-import cats.effect.Deferred
 import cats.effect.IO
-import cats.effect.Ref
-import cats.effect.kernel.Resource
+import cats.effect.Resource
+import cats.effect.std.Random
+import cats.effect.syntax.all._
 import cats.syntax.all._
 import com.comcast.ip4s.Host
 import com.comcast.ip4s.Port
+import com.dimafeng.testcontainers.FixedHostPortGenericContainer
+import com.dimafeng.testcontainers.SingleContainer
 import io.chrisdavenport.rediculous.RedisConnection
+import retry._
 
 object RedisTestkit {
 
-  def sharedContainer =
-    sharedResource(
-      com
-        .dimafeng
-        .testcontainers
-        .DockerComposeContainer(
-          com
-            .dimafeng
-            .testcontainers
-            .DockerComposeContainer
-            .ComposeFile(new File(
-              getClass.getClassLoader.getResource("docker-compose.yml").getPath).asLeft),
-          Seq(com.dimafeng.testcontainers.ExposedService("redis", 6379))
-        ))
+  val RedisPort: Int = 6379
 
-  def connection: Resource[IO, RedisConnection[IO]] =
-    sharedContainer.flatMap { c =>
-      val serviceHost = c.getServiceHost("redis", 6379)
-      val servicePort = c.getServicePort("redis", 6379)
-      RedisConnection
-        .direct[IO]
-        .withHost(
-          Host
-            .fromString(serviceHost)
-            .getOrElse(sys.error(s"Could not create host from '$serviceHost'")))
-        .withPort(
-          Port
-            .fromInt(servicePort)
-            .getOrElse(sys.error(s"Could not create port from '$servicePort")))
-        .build
+  val freeEphemeralPort: IO[Int] =
+    IO(new ServerSocket).bracket(ss =>
+      IO.blocking(ss.bind(new InetSocketAddress(0))) >> IO(ss.getLocalPort))(ss =>
+      IO.blocking(ss.close))
+
+  val redisContainer: IO[SingleContainer[_]] =
+    freeEphemeralPort.map { hostPort =>
+      FixedHostPortGenericContainer(
+        imageName = "redis:7.0.11",
+        command = Seq("redis-server", "--appendonly", "yes", "--appendfsync", "always"),
+        exposedContainerPort = RedisPort,
+        exposedHostPort = hostPort
+      )
     }
 
-  // //////
+  def container: Resource[IO, SingleContainer[_]] =
+    Resource.make(redisContainer.flatTap(c => IO.blocking(c.start())))(c =>
+      IO.blocking(c.stop()))
 
-  // Normally we'd want to stop the container after the suite
-  // However, we're using the same container in multiple suites
-  // Following the workaround here we simply don't stop the container
-  // https://github.com/testcontainers/testcontainers-scala/issues/160
-  def sharedResource[C <: com.dimafeng.testcontainers.DockerComposeContainer](
-      containerDefinition: C
-  ): Resource[IO, C] = {
-    val readyDeferred = Deferred.unsafe[IO, Unit]
-    val refContainer = Ref.unsafe[IO, Option[C]](None)
+  def containerConnection(c: SingleContainer[_]): Resource[IO, RedisConnection[IO]] = {
+    val serviceHost = c.containerIpAddress
+    val servicePort = c.mappedPort(RedisPort)
 
-    Resource.eval(
-      refContainer
-        .modify[(Boolean, C)] {
-          case None => (Some(containerDefinition), (true, containerDefinition))
-          case Some(existing) => (Some(existing), (false, existing))
-        }
-        .flatMap {
-          case (true, c) => IO.delay(c.start()) >> readyDeferred.complete(()).as(c)
-          case (false, c) => readyDeferred.get >> IO.pure(c)
-        }
-    )
+    RedisConnection
+      .pool[IO]
+      .withHost(
+        Host
+          .fromString(serviceHost)
+          .getOrElse(sys.error(s"Could not create host from '$serviceHost'")))
+      .withPort(
+        Port
+          .fromInt(servicePort)
+          .getOrElse(sys.error(s"Could not create port from '$servicePort")))
+      .build
   }
 
+  def connection: Resource[IO, RedisConnection[IO]] =
+    container.flatMap(containerConnection)
+
+  def rateLimiting: Resource[IO, RateLimiting[IO]] =
+    connection.map { rconn =>
+      RedisRateLimiting[IO](rconn, RetryPolicies.alwaysGiveUp, (_, _) => IO.unit)
+    }
+
+  def flakify(c: SingleContainer[_]): Resource[IO, Unit] =
+    Random.scalaUtilRandom[IO].toResource.flatMap { rnd =>
+      val restart =
+        IO.blocking(c.dockerClient.restartContainerCmd(c.containerId).exec())
+
+      val disrupt =
+        rnd
+          .betweenInt(250, 1000)
+          .flatMap { tout =>
+            if ((tout % 20) > 16)
+              //IO.println(s"RESTART ${c.containerId}") >>
+              restart >>
+                IO.sleep(tout.millis)
+            else
+              IO.sleep(tout.millis)
+          }
+          .foreverM
+
+      (IO.sleep(500.millis) >> disrupt).background.void
+    }
+
+  def flakyConnection: Resource[IO, RedisConnection[IO]] =
+    container.flatMap { c => flakify(c) >> containerConnection(c) }
+
+  def flakyRateLimiting: Resource[IO, RateLimiting[IO]] =
+    flakyConnection.map { rconn =>
+      RedisRateLimiting[IO](
+        rconn,
+        RetryPolicies.limitRetries[IO](10) join RetryPolicies.constantDelay(250.millis),
+        (_, _) => IO.unit
+        //(t: Throwable, d: RetryDetails) => IO.println(s"  RETRY $t $d")
+      )
+    }
 }

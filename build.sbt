@@ -8,6 +8,7 @@ ThisBuild / scmInfo := Some(
   ScmInfo(url("https://github.com/precog/contrib"), "scm:git@github.com:precog/contrib.git"))
 
 val CatsEffectVersion = "3.3.14"
+val CatsRetryVersion = "3.1.0"
 val Http4sVersion = "0.23.14"
 val Log4CatsVersion = "2.4.0"
 val MunitCatsEffectVersion = "1.0.7"
@@ -23,6 +24,7 @@ lazy val rateLimit = project
   .settings(name := "contrib-ratelimit")
   .settings(
     libraryDependencies ++= Seq(
+      "com.github.cb372" %% "cats-retry" % CatsRetryVersion,
       "org.typelevel" %% "cats-effect" % CatsEffectVersion,
       "io.chrisdavenport" %% "rediculous" % RediculousVersion,
       "com.dimafeng" %% "testcontainers-scala-core" % TestContainersVersion % Test,
