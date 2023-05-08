@@ -16,8 +16,7 @@
 
 package precog.contrib.ratelimit
 
-import java.util.concurrent.TimeUnit
-import scala.concurrent.duration.FiniteDuration
+import scala.concurrent.duration._
 
 import cats.effect.IO
 import cats.effect.Resource
@@ -59,8 +58,8 @@ abstract class RateLimitingSuite(
     testControl: IO[Unit] => IO[Unit])
     extends munit.CatsEffectSuite {
 
-  val tinyDuration = FiniteDuration(70, TimeUnit.MILLISECONDS)
-  val windowDuration = FiniteDuration(2, TimeUnit.SECONDS)
+  val tinyDuration = 70.millis
+  val windowDuration = 2.seconds
 
   test("counting: sequence of limits works") {
     testControl {
@@ -189,6 +188,46 @@ abstract class RateLimitingSuite(
     }
   }
 
+  test("counting: supports windows shorter than 1 second") {
+    testControl {
+      rateLimiting.use { rl =>
+        val subSecond = 500.millis
+
+        for {
+          signals <- rl.rateLimit("id", 2, 500.millis, RateLimiting.Mode.Counting)
+          _ <- sleepToBeginWindow
+          _ <- signals.limit
+          nowInit0 <- IO.realTime
+          _ <- signals.limit
+          nowInit1 <- IO.realTime
+          _ <- signals.limit
+          now0 <- IO.realTime
+          _ <- signals.limit
+          now1 <- IO.realTime
+          _ <- signals.limit
+          now2 <- IO.realTime
+          _ <- signals.limit
+          now3 <- IO.realTime
+          _ <- signals.limit
+          now4 <- IO.realTime
+          _ <- signals.limit
+          now5 <- IO.realTime
+          _ <- signals.limit
+          now6 <- IO.realTime
+        } yield {
+          assertInitiating("nowInit1 - nowInit0", nowInit1 - nowInit0, window = subSecond)
+          assertInitiating("now0 - nowInit1", now0 - nowInit1, window = subSecond)
+          assertTiny("now1 - now0", now1 - now0)
+          assertWaitWindow("now2 - now1", now2 - now1, window = subSecond)
+          assertTiny("now3 - now2", now3 - now2)
+          assertWaitWindow("now4 - now3", now4 - now3, window = subSecond)
+          assertTiny("now5 - now4", now5 - now4)
+          assertWaitWindow("now6 - now5", now6 - now5, window = subSecond)
+        }
+      }
+    }
+  }
+
   test("external: limit calls do not affect usage") {
     testControl {
       rateLimiting.use { rl =>
@@ -299,31 +338,30 @@ abstract class RateLimitingSuite(
     IO.realTime
       .flatMap(now => IO.sleep(stableEnd(now, windowDuration) - now + (tinyDuration / 5)))
 
-  private def stableEnd(now: FiniteDuration, window: FiniteDuration): FiniteDuration = {
-    FiniteDuration(
-      ((now.toSeconds / window.toSeconds) + 1) * window.toSeconds,
-      TimeUnit.SECONDS)
-  }
+  private def stableEnd(now: FiniteDuration, window: FiniteDuration): FiniteDuration =
+    (((now.toSeconds / window.toSeconds) + 1) * window.toSeconds).seconds
 
   def assertTiny(s: String, duration: FiniteDuration) =
     assert(duration < tinyDuration, s"Assertion failed $s: $duration < $tinyDuration")
 
-  def assertInitiating(s: String, duration: FiniteDuration) = {
+  def assertInitiating(
+      s: String,
+      duration: FiniteDuration,
+      window: FiniteDuration = windowDuration) = {
     assert(
-      duration < (windowDuration + tinyDuration),
-      s"Assertion failed $s: $duration < ${windowDuration + tinyDuration}")
+      duration < (window + tinyDuration),
+      s"Assertion failed $s: $duration < ${window + tinyDuration}")
   }
 
   def assertWaitWindow(
       s: String,
       duration: FiniteDuration,
-      tiny: FiniteDuration = tinyDuration) = {
-    assert(
-      duration > (windowDuration - tiny),
-      s"Assertion failed $s: $duration > ${windowDuration - tiny}")
+      tiny: FiniteDuration = tinyDuration,
+      window: FiniteDuration = windowDuration) = {
+    assert(duration > (window - tiny), s"Assertion failed $s: $duration > ${window - tiny}")
     assert(
       duration < (windowDuration + tiny),
-      s"Assertion failed $s: $duration < ${windowDuration + tiny}")
+      s"Assertion failed $s: $duration < ${window + tiny}")
   }
 
 }
