@@ -19,15 +19,16 @@ package precog.contrib.ratelimit
 import scala.concurrent.duration._
 
 import cats.Applicative
+import cats.Functor
 import cats.effect.Temporal
 import cats.syntax.all._
 import cats.~>
 import io.chrisdavenport.rediculous.Redis
 import io.chrisdavenport.rediculous.RedisCommands
 import io.chrisdavenport.rediculous.RedisConnection
+import io.chrisdavenport.rediculous.RedisCtx
 import io.chrisdavenport.rediculous.RedisTransaction
-import precog.contrib.ratelimit.RateLimiting.Mode.Counting
-import precog.contrib.ratelimit.RateLimiting.Mode.External
+import precog.contrib.ratelimit.RateLimiting.Mode
 import retry.RetryDetails
 import retry.RetryPolicy
 
@@ -53,14 +54,19 @@ object RedisRateLimiting {
   def signals[F[_]](key: String, max: Int, window: FiniteDuration, mode: RateLimiting.Mode)(
       implicit F: Temporal[F]): RateLimiting.Signals[Redis[F, *]] = {
 
+    assert(window >= 1.milli, "window must be at least 1 millisecond")
+
     val nowF: Redis[F, FiniteDuration] =
       Redis.liftF(F.realTime)
 
-    def containingWindowEndsAt(ts: FiniteDuration, window: FiniteDuration): Long =
-      (ts.toSeconds / window.toSeconds + 1) * window.toSeconds
+    def containingWindowEndsAtMillis(ts: FiniteDuration, window: FiniteDuration): Long =
+      (ts.toMillis / window.toMillis + 1) * window.toMillis
 
-    def bucket(endsAtSecs: Long): String =
-      s"${key}:${endsAtSecs}"
+    def bucket(endsAtMillis: Long): String =
+      s"${key}:${endsAtMillis}"
+
+    def bucketExpiresIn(endsAtMillis: Long, now: FiniteDuration): FiniteDuration =
+      endsAtMillis.millis + 1.second - now
 
     def transact[A](txn: RedisTransaction[A]): Redis[F, A] =
       txn.transact[F].flatMap {
@@ -72,74 +78,76 @@ object RedisRateLimiting {
           Redis.liftF(F.raiseError[A](new Throwable(s"Transaction Failed: $value")))
       }
 
+    def setRemaining[G[_]: Functor: RedisCtx](
+        endsAtMillis: Long,
+        expiresIn: FiniteDuration,
+        remaining: Int,
+        ifNotExists: Boolean): G[Unit] = {
+
+      val opts =
+        RedisCommands
+          .SetOpts
+          .default
+          .copy(
+            setMilliseconds = Some(expiresIn.toMillis),
+            setCondition = Option.when(ifNotExists)(RedisCommands.Condition.Nx)
+          )
+
+      RedisCommands.set[G](bucket(endsAtMillis), remaining.toString, opts).void
+    }
+
     def createBucketIfNotExists(
-        endsAtSecs: Long,
+        endsAtMillis: Long,
         expiresIn: FiniteDuration): RedisTransaction[Unit] =
-      RedisCommands
-        .set[RedisTransaction](
-          bucket(endsAtSecs),
-          max.toString,
-          RedisCommands
-            .SetOpts
-            .default
-            .copy(
-              setSeconds = Some(expiresIn.toSeconds),
-              setCondition = Some(RedisCommands.Condition.Nx))
-        )
-        .void
+      setRemaining[RedisTransaction](endsAtMillis, expiresIn, max, ifNotExists = true)
 
-    def decrementAndGetRemaining(endsAtSecs: Long, expiresIn: FiniteDuration): Redis[F, Long] =
+    def decrementAndGetRemaining(
+        endsAtMillis: Long,
+        expiresIn: FiniteDuration): Redis[F, Long] =
       transact(
-        createBucketIfNotExists(endsAtSecs, expiresIn) *>
-          RedisCommands.decr[RedisTransaction](bucket(endsAtSecs)))
+        createBucketIfNotExists(endsAtMillis, expiresIn) *>
+          RedisCommands.decr[RedisTransaction](bucket(endsAtMillis)))
 
-    def getRemaining(endsAtSecs: Long, expiresIn: FiniteDuration): Redis[F, Long] =
+    def getRemaining(endsAtMillis: Long, expiresIn: FiniteDuration): Redis[F, Long] =
       transact(
-        createBucketIfNotExists(endsAtSecs, expiresIn) *>
-          RedisCommands.get[RedisTransaction](bucket(endsAtSecs))
+        createBucketIfNotExists(endsAtMillis, expiresIn) *>
+          RedisCommands.get[RedisTransaction](bucket(endsAtMillis))
       ).flatMap { response =>
         Redis.liftF {
           response
             .flatMap(_.toLongOption)
             .liftTo[F](new Throwable(s"Unexpected error getting rate limit bucket '${bucket(
-              endsAtSecs)}' from redis: expected some long, got ${response}"))
+              endsAtMillis)}' from redis: expected some long, got ${response}"))
         }
       }
 
-    def setRemaining(
-        endsAtSecs: Long,
-        expiresIn: FiniteDuration,
-        remaining: Int): Redis[F, Unit] =
-      RedisCommands
-        .set[Redis[F, *]](
-          bucket(endsAtSecs),
-          remaining.toString,
-          RedisCommands.SetOpts.default.copy(setSeconds = Some(expiresIn.toSeconds)))
-        .void
-
     def setWindowUsage(usage: Int): Redis[F, Unit] =
       nowF.flatMap { now =>
-        val currentBucketEndsAt = containingWindowEndsAt(now, window)
-        val currentBucketExpiresIn = (currentBucketEndsAt + 1).seconds - now
-        setRemaining(currentBucketEndsAt, currentBucketExpiresIn, max - usage)
+        val currentBucketEndsAtMillis = containingWindowEndsAtMillis(now, window)
+        setRemaining[Redis[F, *]](
+          currentBucketEndsAtMillis,
+          bucketExpiresIn(currentBucketEndsAtMillis, now),
+          max - usage,
+          ifNotExists = false)
       }
 
     val backoff: Redis[F, Unit] = setWindowUsage(max)
 
     lazy val limit: Redis[F, Unit] =
       nowF.flatMap { now =>
-        val currentBucketEndsAt = containingWindowEndsAt(now, window)
-        val currentBucketExpiresIn = (currentBucketEndsAt + 1).seconds - now
+        val currentBucketEndsAtMillis = containingWindowEndsAtMillis(now, window)
+        val currentBucketExpiresIn = bucketExpiresIn(currentBucketEndsAtMillis, now)
 
         val reqsRemaining = mode match {
-          case Counting =>
-            decrementAndGetRemaining(currentBucketEndsAt, currentBucketExpiresIn).map(_ + 1)
-          case External => getRemaining(currentBucketEndsAt, currentBucketExpiresIn)
+          case Mode.Counting =>
+            decrementAndGetRemaining(currentBucketEndsAtMillis, currentBucketExpiresIn).map(
+              _ + 1)
+          case Mode.External => getRemaining(currentBucketEndsAtMillis, currentBucketExpiresIn)
         }
 
         reqsRemaining.flatMap { remaining =>
           Applicative[Redis[F, *]].whenA(remaining <= 0) {
-            Redis.liftF(F.sleep(currentBucketExpiresIn - 1.second)) >> limit
+            Redis.liftF(F.sleep(currentBucketEndsAtMillis.millis - now)) >> limit
           }
         }
       }
