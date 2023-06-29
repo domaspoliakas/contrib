@@ -110,7 +110,7 @@ final class LocalRateLimiting[F[_]: Async, A: Hash] private () {
 
     val back = for {
       now <- nowF
-      modified <- stateRef modify [F[Unit]] {
+      modified <- stateRef.modify[F[Unit]] {
         case Done() => (Done(), ().pure[F])
 
         // nothing available to drain, stop the recusion
@@ -154,7 +154,7 @@ final class LocalRateLimiting[F[_]: Async, A: Hash] private () {
 
     val back = for {
       now <- nowF
-      modified <- stateRef modify [F[Unit]] {
+      modified <- stateRef.modify[F[Unit]] {
         case Done() => (Done(), ().pure[F])
 
         // the queue is empty, so attempt to continue
@@ -174,7 +174,7 @@ final class LocalRateLimiting[F[_]: Async, A: Hash] private () {
               Async[F]
                 .start(sleep >> drain(config, stateRef, updateUsage))
                 .flatMap(fib =>
-                  stateRef modify [F[Unit]] {
+                  stateRef.modify[F[Unit]] {
                     case Active(start, count, queue, cancel) =>
                       // we shouldn't need to actually run the old cancel, but we do anyways
                       (Active(start, count, queue, fib.cancel), cancel)

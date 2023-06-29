@@ -1,4 +1,4 @@
-ThisBuild / scalaVersion := "2.13.8"
+ThisBuild / scalaVersion := "2.13.11"
 
 ThisBuild / githubRepository := "contrib"
 
@@ -10,7 +10,7 @@ ThisBuild / scmInfo := Some(
 val CatsEffectVersion = "3.3.14"
 val CatsRetryVersion = "3.1.0"
 val Http4sVersion = "0.23.14"
-val Log4CatsVersion = "2.4.0"
+val Log4CatsVersion = "2.5.0"
 val MunitCatsEffectVersion = "1.0.7"
 val MunitVersion = "0.7.29"
 val RediculousVersion = "0.5.0"
