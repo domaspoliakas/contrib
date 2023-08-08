@@ -108,7 +108,7 @@ object LoggerMiddleware {
             _.chunks.flatMap(s => Stream.exec(vec.update(_ :+ s)))
 
           Resource.make(
-            // Cannot Be Done Concurrenthronously - Otherwise All Chunks May Not Be Appended before Finalization
+            // Cannot Be Done Asynchronously - Otherwise All Chunks May Not Be Appended before Finalization
             F.pure(response.withBodyStream(response.body.observe(dumpChunksToVec)))
           ) { r =>
             val newBody = Stream.eval(vec.get).flatMap(Stream.emits).unchunks
