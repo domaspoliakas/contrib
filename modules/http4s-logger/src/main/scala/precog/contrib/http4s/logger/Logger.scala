@@ -18,7 +18,7 @@ package precog.contrib.http4s.logger
 
 import java.nio.charset.StandardCharsets
 
-import cats.effect.Async
+import cats.effect.Concurrent
 import cats.effect.Ref
 import cats.effect.Resource
 import cats.syntax.all._
@@ -34,7 +34,7 @@ import org.typelevel.log4cats.Logger
 object LoggerMiddleware {
   val DefaultMaxChunks = 10L
 
-  def client[F[_]: Async](logger: Logger[F]): Client[F] => Client[F] =
+  def client[F[_]: Concurrent](logger: Logger[F]): Client[F] => Client[F] =
     complete[F](
       logger,
       logger.trace(_),
@@ -47,7 +47,7 @@ object LoggerMiddleware {
       }
     )
 
-  def realtimeResponseChunks[F[_]: Async](
+  def realtimeResponseChunks[F[_]: Concurrent](
       logger: Logger[F],
       max: Long = DefaultMaxChunks): Client[F] => Client[F] =
     realtimeResponseChunksLogger[F](
@@ -62,7 +62,7 @@ object LoggerMiddleware {
       }
     )
 
-  def complete[F[_]: Async](
+  def complete[F[_]: Concurrent](
       logger: Logger[F],
       logReq: String => F[Unit],
       logResp: (Status, String) => F[Unit]): Client[F] => Client[F] = { client =>
@@ -81,7 +81,7 @@ object LoggerMiddleware {
   }
 
   def requestLoggerComplete[F[_]](logMessage: Request[F] => F[Unit])(
-      implicit F: Async[F]): Client[F] => Client[F] = { client =>
+      implicit F: Concurrent[F]): Client[F] => Client[F] = { client =>
     Client { req =>
       Resource.suspend {
         Ref[F].of(Vector.empty[Chunk[Byte]]).flatMap { vec =>
@@ -100,7 +100,7 @@ object LoggerMiddleware {
   }
 
   def responseLoggerComplete[F[_]](logger: Logger[F], logMessage: Response[F] => F[Unit])(
-      implicit F: Async[F]): Client[F] => Client[F] = { client =>
+      implicit F: Concurrent[F]): Client[F] => Client[F] = { client =>
     def logResponse(response: Response[F]): Resource[F, Response[F]] =
       Resource.suspend {
         Ref[F].of(Vector.empty[Chunk[Byte]]).map { vec =>
@@ -108,7 +108,7 @@ object LoggerMiddleware {
             _.chunks.flatMap(s => Stream.exec(vec.update(_ :+ s)))
 
           Resource.make(
-            // Cannot Be Done Asynchronously - Otherwise All Chunks May Not Be Appended before Finalization
+            // Cannot Be Done Concurrenthronously - Otherwise All Chunks May Not Be Appended before Finalization
             F.pure(response.withBodyStream(response.body.observe(dumpChunksToVec)))
           ) { r =>
             val newBody = Stream.eval(vec.get).flatMap(Stream.emits).unchunks
@@ -121,7 +121,7 @@ object LoggerMiddleware {
     Client(req => client.run(req).flatMap(logResponse))
   }
 
-  def realtimeResponseChunksLogger[F[_]: Async](
+  def realtimeResponseChunksLogger[F[_]: Concurrent](
       max: Long,
       logReq: String => F[Unit],
       logResp: (Status, String) => F[Unit]): Client[F] => Client[F] = { client =>
@@ -135,7 +135,7 @@ object LoggerMiddleware {
   }
 
   def responseLoggerRealtimeChunks[F[_]](max: Long, logPart: (Status, String) => F[Unit])(
-      implicit F: Async[F]): Client[F] => Client[F] = { client =>
+      implicit F: Concurrent[F]): Client[F] => Client[F] = { client =>
     Client { req =>
       client.run(req) map { resp =>
         def logger(ix: Long, part: String): F[Unit] =
