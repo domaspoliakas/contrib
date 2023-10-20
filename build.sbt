@@ -17,7 +17,7 @@ val RediculousVersion = "0.5.0"
 val TestContainersVersion = "0.40.9"
 
 lazy val root =
-  project.in(file(".")).settings(noPublishSettings).aggregate(rateLimit, http4sLogger)
+  project.in(file(".")).settings(noPublishSettings).aggregate(rateLimit, http4sLogger, cache)
 
 lazy val rateLimit = project
   .in(file("modules/rate-limit"))
