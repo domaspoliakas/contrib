@@ -16,6 +16,7 @@
 
 package precog.contrib.cache
 
+import org.http4s.Response
 
 trait Caching[F[_]] {
 
