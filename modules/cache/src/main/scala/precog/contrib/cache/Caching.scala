@@ -20,6 +20,6 @@ import org.http4s.Response
 
 trait Caching[F[_]] {
 
-  def cache: Cache[F, String, Response[F]]
+  def response: Cache[F, String, Response[F]]
 
 }
