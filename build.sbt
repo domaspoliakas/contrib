@@ -46,7 +46,7 @@ lazy val http4sLogger = project
 
 lazy val cache = project
   .in(file("modules/cache"))
-  .settings(name := "contrib-logger")
+  .settings(name := "contrib-cache")
   .settings(
     libraryDependencies ++= Seq(
       "org.http4s" %% "http4s-core" % Http4sVersion
