@@ -15,20 +15,3 @@
  */
 
 package precog.contrib.cache
-
-import org.http4s.Response
-
-trait Caching[F[_]] {
-
-  def response: Cache[F, String, Response[F]]
-
-}
-
-object Caching {
-
-  def apply[F[_]](res: Cache[F, String, Response[F]]) = new Caching[F] {
-
-    def response = res
-  }
-
-}
