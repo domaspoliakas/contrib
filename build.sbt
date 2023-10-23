@@ -7,7 +7,7 @@ ThisBuild / homepage := Some(url("https://github.com/precog/contrib"))
 ThisBuild / scmInfo := Some(
   ScmInfo(url("https://github.com/precog/contrib"), "scm:git@github.com:precog/contrib.git"))
 
-val CatsEffectVersion = "3.3.14"
+val CatsEffectVersion = "3.4.8"
 val CatsRetryVersion = "3.1.0"
 val Http4sVersion = "0.23.14"
 val Log4CatsVersion = "2.5.0"
@@ -49,6 +49,7 @@ lazy val cache = project
   .settings(name := "contrib-cache")
   .settings(
     libraryDependencies ++= Seq(
+      "org.typelevel" %% "cats-effect" % CatsEffectVersion,
       "org.http4s" %% "http4s-core" % Http4sVersion
     )
   )
