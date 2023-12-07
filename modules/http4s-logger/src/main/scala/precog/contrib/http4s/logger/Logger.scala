@@ -67,7 +67,7 @@ object LoggerMiddleware {
       logReq: String => F[Unit],
       logResp: (Status, String) => F[Unit]): Client[F] => Client[F] = { client =>
     def logResponse(resp: Response[F]): F[Unit] =
-      resp.body.through(fs2.text.utf8.decode).compile.string flatMap { str =>
+      resp.body.through(fs2.text.utf8.decode).compile.string.flatMap { str =>
         logResp(resp.status, bodyMessageWrap(resp, str))
       }
 
@@ -137,12 +137,15 @@ object LoggerMiddleware {
   def responseLoggerRealtimeChunks[F[_]](max: Long, logPart: (Status, String) => F[Unit])(
       implicit F: Concurrent[F]): Client[F] => Client[F] = { client =>
     Client { req =>
-      client.run(req) map { resp =>
+      client.run(req).flatMap { resp =>
         def logger(ix: Long, part: String): F[Unit] =
           logPart(resp.status, ixMessageWrap(ix, bodyMessageWrap(resp, part)))
 
         val body = resp.body.through(logFirstN(max, logger))
-        resp.withBodyStream(body)
+
+        val firstLog = logger(-1, "")
+
+        Resource.eval(firstLog).as(resp.withBodyStream(body))
       }
     }
   }
