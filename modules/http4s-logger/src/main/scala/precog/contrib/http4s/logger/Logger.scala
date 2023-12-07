@@ -164,7 +164,10 @@ object LoggerMiddleware {
       max: Long,
       logChunk: (Long, Chunk[Byte]) => F[Unit])
       : Stream[F, Byte] => Resource[F, Stream[F, Byte]] = { s =>
-    logFirstNChunk0(Vector.empty, s, max, logChunk).stream.compile.resource.lastOrError
+    logFirstNChunk0(Vector.empty, s, max, logChunk).stream.compile.resource.last.flatMap {
+      case Some(value) => Resource.pure(value)
+      case None => Resource.pure(Stream.empty)
+    }
   }
 
   private def logFirstNChunk0[F[_]](
@@ -178,15 +181,16 @@ object LoggerMiddleware {
         if (init.isEmpty)
           Pull.eval(logChunk(0, Chunk.empty))
         else
-          Pull.done
+          Pull.output1(Stream.iterable(init).flatMap(Stream.chunk))
+
       case Some((chunk, remaining)) =>
         val size = init.size.toLong
 
-        if (size < max)
+        if (size < max) {
           Pull
             .eval(logChunk(size, chunk))
             .flatMap(_ => logFirstNChunk0(init :+ chunk, remaining, max, logChunk))
-        else
+        } else
           Pull.output1(Stream.iterable(init :+ chunk).flatMap(Stream.chunk) ++ remaining)
 
     }
