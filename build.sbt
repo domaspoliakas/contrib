@@ -40,7 +40,10 @@ lazy val http4sLogger = project
   .settings(
     libraryDependencies ++= Seq(
       "org.http4s" %% "http4s-client" % Http4sVersion,
-      "org.typelevel" %% "log4cats-slf4j" % Log4CatsVersion
+      "org.typelevel" %% "log4cats-slf4j" % Log4CatsVersion,
+      "org.scalameta" %% "munit" % MunitVersion % Test,
+      "org.typelevel" %% "cats-effect-testkit" % CatsEffectVersion % Test,
+      "org.typelevel" %% "munit-cats-effect-3" % MunitCatsEffectVersion % Test
     )
   )
 
