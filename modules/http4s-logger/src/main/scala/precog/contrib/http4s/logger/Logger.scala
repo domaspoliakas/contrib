@@ -24,6 +24,7 @@ import cats.effect.Resource
 import cats.syntax.all._
 import fs2.Chunk
 import fs2.Pipe
+import fs2.Pull
 import fs2.Stream
 import org.http4s.Request
 import org.http4s.Response
@@ -141,34 +142,54 @@ object LoggerMiddleware {
         def logger(ix: Long, part: String): F[Unit] =
           logPart(resp.status, ixMessageWrap(ix, bodyMessageWrap(resp, part)))
 
-        val body = resp.body.through(logFirstN(max, logger))
+        val logBody: Stream[F, Byte] => Resource[F, Stream[F, Byte]] =
+          logFirstN(max, logger)
 
-        val firstLog = logger(-1, "")
+        logBody(resp.body).map(body => resp.withBodyStream(body))
 
-        Resource.eval(firstLog).as(resp.withBodyStream(body))
       }
     }
   }
 
-  private def logFirstN[F[_]](
+  private def logFirstN[F[_]: Concurrent](
       max: Long,
-      log: (Long, String) => F[Unit]): Pipe[F, Byte, Byte] = {
+      log: (Long, String) => F[Unit]): Stream[F, Byte] => Resource[F, Stream[F, Byte]] = {
     def logChunk(ix: Long, bytes: Chunk[Byte]) =
       log(ix, new String(bytes.toArray, StandardCharsets.UTF_8))
 
     logFirstNChunk(max, logChunk)
   }
 
-  private def logFirstNChunk[F[_]](
+  private def logFirstNChunk[F[_]: Concurrent](
       max: Long,
-      logChunk: (Long, Chunk[Byte]) => F[Unit]): Pipe[F, Byte, Byte] = { s =>
-    s.chunks.zipWithIndex flatMap {
-      case (bytes, i) if i < max =>
-        Stream.exec(logChunk(i, bytes)) ++ Stream.chunk(bytes)
-      case (bytes, _) =>
-        Stream.chunk(bytes)
-    }
+      logChunk: (Long, Chunk[Byte]) => F[Unit])
+      : Stream[F, Byte] => Resource[F, Stream[F, Byte]] = { s =>
+    logFirstNChunk0(Vector.empty, s, max, logChunk).stream.compile.resource.lastOrError
   }
+
+  private def logFirstNChunk0[F[_]](
+      init: Vector[Chunk[Byte]],
+      s: Stream[F, Byte],
+      max: Long,
+      logChunk: (Long, Chunk[Byte]) => F[Unit]
+  ): Pull[F, Stream[F, Byte], Unit] =
+    s.pull.uncons.flatMap {
+      case None =>
+        if (init.isEmpty)
+          Pull.eval(logChunk(0, Chunk.empty))
+        else
+          Pull.done
+      case Some((chunk, remaining)) =>
+        val size = init.size.toLong
+
+        if (size < max)
+          Pull
+            .eval(logChunk(size, chunk))
+            .flatMap(_ => logFirstNChunk0(init :+ chunk, remaining, max, logChunk))
+        else
+          Pull.output1(Stream.iterable(init :+ chunk).flatMap(Stream.chunk) ++ remaining)
+
+    }
 
   private def bodyMessageWrap[F[_]](resp: Response[F], inp: String): String = {
     val prelude = s"${resp.httpVersion} ${resp.status}"
