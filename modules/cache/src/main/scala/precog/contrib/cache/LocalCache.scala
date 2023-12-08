@@ -97,7 +97,7 @@ object LocalCache {
               (
                 s,
                 // we background to be able to handle the case when population self-cancels
-                poll(populateCache(uuid, in, newD, key).background.surround(newD.get.rethrow)))
+                populateCache(uuid, in, newD, key).background.surround(poll(newD.get.rethrow)))
           }.flatten
         }
       }
