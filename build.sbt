@@ -51,8 +51,13 @@ lazy val cache = project
   .in(file("modules/cache"))
   .settings(name := "contrib-cache")
   .settings(
+    Test / fork := true,
+    Test / javaOptions += "-XX:ActiveProcessorCount=2",
     libraryDependencies ++= Seq(
       "org.typelevel" %% "cats-effect" % CatsEffectVersion,
-      "org.http4s" %% "http4s-core" % Http4sVersion
+      "org.http4s" %% "http4s-core" % Http4sVersion,
+      "org.scalameta" %% "munit" % MunitVersion % Test,
+      "org.typelevel" %% "cats-effect-testkit" % CatsEffectVersion % Test,
+      "org.typelevel" %% "munit-cats-effect-3" % MunitCatsEffectVersion % Test
     )
   )
