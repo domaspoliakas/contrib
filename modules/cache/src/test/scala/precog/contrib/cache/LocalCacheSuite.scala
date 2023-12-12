@@ -18,7 +18,6 @@ package precog.contrib.cache
 import java.util.concurrent.CancellationException
 import scala.concurrent.duration._
 
-import cats.effect.Async
 import cats.effect.IO
 import cats.effect.Resource
 import cats.effect.testkit.TestControl
