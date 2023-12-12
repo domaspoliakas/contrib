@@ -18,6 +18,7 @@ package precog.contrib.cache
 
 import cats.effect.IO
 import cats.effect.Resource
+import cats.kernel.BoundedEnumerable
 import cats.syntax.all._
 import fs2.Chunk
 import fs2.Stream
@@ -29,18 +30,43 @@ final class LocalCacheSuite extends CatsEffectSuite {
   val cache =
     LocalCache.ByString[IO](_.compile.to(Chunk).map(Stream.chunk))
 
-  test("immediately canceling cached value doesn't deadlock") {
-    cache.flatMap { c =>
-      val n = 1024
-      val go = c("foo", Resource.pure(Response[IO]()), false)
-      val many = List.fill(n)(go)
-
-      many
-        .map(_.start.flatMap(fib => IO.cede >> fib.cancel))
-        .parSequence
-        .productR(many.parSequence)
-        .map(_.length)
-        .assertEquals(n)
+  val responses: IO[Resource[IO, Response[IO]]] =
+    IO.ref('a').map { ctr =>
+      Resource.eval(ctr.getAndUpdate(BoundedEnumerable[Char].cycleNext)).map { c =>
+        Response(body = Stream.emit(c.toByte))
+      }
     }
+
+  test("cache response") {
+    (cache, responses).flatMapN { (c, r) =>
+      c("k", r, false)
+        .parReplicateA(4)
+        .flatMap(_.traverse(_.bodyText.compile.foldMonoid))
+        .assertEquals(List("a", "a", "a", "a"))
+    }
+  }
+
+  test("reacquire cached response when forced") {
+    (cache, responses).flatMapN { (c, r) =>
+      (c("k", r, false) >> c("k", r, true))
+        .flatMap(_.bodyText.compile.foldMonoid)
+        .assertEquals("b")
+    }
+  }
+
+  test("forcing doesn't reattempt inflight response") {
+    fail("todo")
+  }
+
+  test("propagate errors during cache population") {
+    fail("todo")
+  }
+
+  test("translate response self-cancelation into error") {
+    fail("todo")
+  }
+
+  test("translate external population cancelation into error") {
+    fail("todo")
   }
 }

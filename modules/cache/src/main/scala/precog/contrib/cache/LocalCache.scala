@@ -16,10 +16,10 @@
 
 package precog.contrib.cache
 
-import Function.const
+import java.util.concurrent.CancellationException
+
 import cats.effect.Concurrent
 import cats.effect.Deferred
-import cats.effect.Outcome
 import cats.effect.Resource
 import cats.effect.std.MapRef
 import cats.effect.syntax.all._
@@ -53,8 +53,7 @@ object LocalCache {
   ////
 
   private sealed abstract class State[F[_]]
-  private final case class Writing[F[_]](
-      result: Deferred[F, Outcome[F, Throwable, Response[F]]])
+  private final case class Writing[F[_]](result: Deferred[F, Either[Throwable, F[Response[F]]]])
       extends State[F]
   private final case class Available[F[_]](result: F[Response[F]]) extends State[F]
 
@@ -63,34 +62,47 @@ object LocalCache {
       mapRef: MapRef[F, String, Option[State[F]]])(implicit F: Concurrent[F])
       extends Cache[F, String, Response[F]] {
 
-    private def populateCache(key: String, req: Resource[F, Response[F]]): F[Response[F]] =
-      req.use(res => cached(res.body).map(res.withBodyStream)).guaranteeCase { oc =>
-        mapRef(key).modify {
-          case Some(Writing(result)) =>
-            val next = oc.fold[Option[State[F]]](None, const(None), fa => Some(Available(fa)))
-            (next, result.complete(oc).void)
+    private def publishResult(key: String, res: Either[Throwable, F[Response[F]]]): F[Unit] =
+      mapRef(key).modify {
+        case Some(Writing(result)) =>
+          (res.map(Available(_)).toOption, result.complete(res).void)
 
-          case other =>
-            (
-              other,
-              F.raiseError[Unit](new IllegalStateException(
+        case other =>
+          (
+            other,
+            F.raiseError[Unit](
+              new IllegalStateException(
                 s"Expected cache state for '$key' to be 'Writing', instead was $other")))
-        }.flatten
-      }
+      }.flatten
 
     def apply(key: String, in: Resource[F, Response[F]], force: Boolean): F[Response[F]] =
-      F.deferred[Outcome[F, Throwable, Response[F]]].flatMap { d =>
+      F.deferred[Either[Throwable, F[Response[F]]]].flatMap { d =>
         F.uncancelable { poll =>
           mapRef(key).modify {
             case s @ Some(Writing(result)) =>
-              // await cache population and, if canceled, reattempt
-              (s, poll(result.get.flatMap(_.embed(apply(key, in, force)))))
+              (s, poll(result.get.rethrow.flatten))
 
             case s @ Some(Available(result)) if !force =>
               (s, result)
 
             case _ =>
-              (Some(Writing(d)), poll(populateCache(key, in)))
+              val populate =
+                in.use(res => cached(res.body).map(res.withBodyStream)).background.use { join =>
+                  val liftCanceled =
+                    Left(new CancellationException(
+                      s"Cache population for key '$key' was canceled."))
+
+                  val embedded =
+                    join.map(_.fold(liftCanceled, Left(_), Right(_)))
+
+                  poll(embedded)
+                    .onCancel(publishResult(key, liftCanceled))
+                    .flatTap(publishResult(key, _))
+                    .rethrow
+                    .flatten
+                }
+
+              (Some(Writing(d)), populate)
           }.flatten
         }
       }
