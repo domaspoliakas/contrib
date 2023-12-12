@@ -90,13 +90,12 @@ final class LocalCacheSuite extends CatsEffectSuite {
 
   test("translate response self-cancelation into error") {
     TestControl.executeEmbed(
-      cache.flatMap {
-        c =>
-          c(
-            "k",
-            Resource.eval(IO.canceled.as(null: Response[IO])),
-            false
-          ).intercept[CancellationException]
+      cache.flatMap { c =>
+        c(
+          "k",
+          Resource.eval(IO.canceled.as(null: Response[IO])),
+          false
+        ).intercept[CancellationException]
       }
     )
   }
@@ -106,7 +105,7 @@ final class LocalCacheSuite extends CatsEffectSuite {
   }
 
   test("external cancelation should gracefully release the cache key for later use") {
-    TestControl.executeEmbed{
+    TestControl.executeEmbed {
       val test = (cache, responses).flatMapN { (c, r) =>
         val first = c("k", Resource.eval(IO.never), false)
         val second = c("k", r, false)
@@ -116,7 +115,7 @@ final class LocalCacheSuite extends CatsEffectSuite {
           .assertEquals("a")
       }
 
-      // Race conditions are hard, best try this a few times to make sure we 
+      // Race conditions are hard, best try this a few times to make sure we
       // catch problems
       test.replicateA_(10000)
     }
