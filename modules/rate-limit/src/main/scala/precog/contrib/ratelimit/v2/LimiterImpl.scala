@@ -52,7 +52,7 @@ case class LimiterImpl[F[_], A](
   def lfLoop(fid: Unique.Token, task: F[A]): F[A] = {
     mapRef(fid).get.flatMap {
       case (Some(Cancelled)) =>
-        F.canceled.flatMap(_ => F.pure(println("This will be triggered?")) *> task)
+        F.canceled *> task
       case _ =>
         limitFunction.request.flatMap {
           case Left(nextInstant) =>
