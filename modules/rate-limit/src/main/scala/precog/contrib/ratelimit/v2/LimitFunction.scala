@@ -26,7 +26,7 @@ import cats.syntax.all._
 import cats.~>
 import org.typelevel.cats.time._
 
-sealed trait LimitFunction[F[_], -A] { self =>
+trait LimitFunction[F[_], -A] { self =>
 
   /**
    * Request to execute a task, subject to the limit defined by this function.
