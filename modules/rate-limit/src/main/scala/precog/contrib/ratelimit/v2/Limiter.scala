@@ -16,6 +16,8 @@
 
 package precog.contrib.ratelimit.v2
 
+import scala.concurrent.duration._
+
 import cats.effect.Async
 import cats.effect.Fiber
 import cats.effect.Resource
@@ -66,22 +68,38 @@ object Limiter {
       queue <- Resource.eval(Queue.unbounded[F, Unique.Token])
       stream =
         Stream.fromQueueUnterminated(queue, limit).parEvalMap(parallelism) { fid =>
-          mapRef(fid).get.flatMap {
+          def req: F[Unit] = mapRef(fid).get.flatMap {
             case Some(Waiting(task, signal)) =>
-              supervisor
-                .supervise(
-                  task
-                )
-                .flatMap(fiber =>
-                  mapRef(fid).set(Running(fiber).some) *>
-                    fiber.join.flatMap(signal.complete))
-                .void
+              println("Waiting")
+              limitFunction.request.flatMap {
+                case Left(i) =>
+                  F.realTimeInstant.flatMap { now =>
+                    val sleepTime = i.toEpochMilli - now.toEpochMilli
+                    if (sleepTime > 0)
+                      F.sleep(sleepTime.millis) *> req
+                    else
+                      req
+                  }
+                case Right(_) =>
+                  supervisor
+                    .supervise(
+                      task
+                    )
+                    .flatMap(fiber =>
+                      mapRef(fid).set(Running(fiber).some) *>
+                        fiber.join.flatMap(signal.complete))
+                    .void
 
-            case _ => F.pure(())
+              }
+
+            case a =>
+              F.pure(())
           }
+
+          req
         }
 
-      limiter <- Stream(LimiterImpl(limitFunction, supervisor, mapRef, queue))
+      limiter <- Stream(LimiterImpl(supervisor, mapRef, queue))
         .concurrently(stream)
         .compile
         .resource
@@ -92,7 +110,6 @@ object Limiter {
   }
 
   private case class LimiterImpl[F[_], A](
-      limitFunction: LimitFunction[F, A],
       supervisor: Supervisor[F],
       mapRef: MapRef[F, Unique.Token, Option[SupervisedState[F, A]]],
       queue: Queue[F, Unique.Token]

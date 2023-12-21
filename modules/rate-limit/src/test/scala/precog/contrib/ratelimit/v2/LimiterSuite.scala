@@ -195,4 +195,27 @@ class LimiterSuite extends CatsEffectSuite {
 
   }
 
+  test("Limiter loops uncompletable request (by limit function) until cancelment ") {
+    val lf: LimitFunction[IO, Unit] = new LimitFunction[IO, Unit] {
+
+      def request: IO[Either[Instant, IO[Unit]]] =
+        IO.realTimeInstant.map(i => i.plusSeconds(1).asLeft)
+
+      def update(a: Unit): IO[Unit] = IO.unit
+
+    }
+
+    Limiter.limiter[IO, Unit](lf, 1, 1).use { limiter =>
+      val task = IO.println("I'm being executed")
+
+      for {
+        f1 <- limiter.submit(task).start
+        _ <- IO.sleep(5.seconds)
+        _ <- f1.cancel
+      } yield ()
+
+    }
+
+  }
+
 }
