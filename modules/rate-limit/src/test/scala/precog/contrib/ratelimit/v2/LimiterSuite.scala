@@ -17,18 +17,10 @@
 package precog.contrib.ratelimit.v2
 
 import java.time.Instant
-import java.util.concurrent.ConcurrentHashMap
-import scala.collection.concurrent.TrieMap
 import scala.concurrent.duration._
 
-import LimiterImpl._
 import cats.effect.IO
-import cats.effect.kernel.Unique
-import cats.effect.std.MapRef
-import cats.effect.std.Queue
-import cats.effect.std.Supervisor
 import cats.implicits._
-import fs2.Stream
 import munit.CatsEffectSuite
 
 class LimiterSuite extends CatsEffectSuite {
@@ -44,33 +36,29 @@ class LimiterSuite extends CatsEffectSuite {
 
     }
 
-    ???
-    /*
-    Supervisor[IO].use { supervisor =>
-      MapRef.ofScalaConcurrentTrieMap[IO, Unique.Token, SupervisedState[IO]].flatMap { mapRef =>
-        Queue.unbounded[IO, Unique.Token].flatMap { queue =>
-          val limiter = LimiterImpl(neverLf, supervisor, mapRef, queue, 1, 1)
+    Limiter.limiter[IO, Unit](neverLf, 1, 1).use { limiter =>
+      val task =
+        IO.println("Task Can started")
+          .flatMap(_ => IO.sleep(10.seconds) *> IO.println("Task Can finished"))
+          .onCancel(IO.println("Task Can was cancelled"))
 
-          val task = IO.println("Task Can").onCancel(IO.println("I was cancelled"))
-          val taskUnc = IO.println("Task Unc")
+      val taskUnc = IO
+        .println("Task Unc Started")
+        .flatMap(_ => IO.sleep(10.seconds) *> IO.println("Task Unc finished"))
 
-          limiter.run.compile.drain.background.use { _ =>
-            for {
-              f1 <- limiter.submit(task).start
-              f2 <- limiter.submit(taskUnc).start
+      for {
+        f1 <- limiter.submit(task).start
+        f2 <- limiter.submit(taskUnc).start
 
-              _ <- IO.sleep(3.seconds)
-              _ <- IO.println("About to cancel")
-              _ <- f1.cancel
-              _ <- f2.join
-            } yield ()
-
-          }
-        }
-      }
+        _ <- IO.sleep(3.seconds)
+        _ <- IO.println("About to cancel")
+        _ <- f1.cancel
+        _ <- f2.join
+        _ <- IO.sleep(3.seconds)
+      } yield ()
 
     }
-     */
+
   }
 
   /*

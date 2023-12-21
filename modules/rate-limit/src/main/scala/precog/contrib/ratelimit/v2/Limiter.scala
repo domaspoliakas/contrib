@@ -18,9 +18,13 @@ package precog.contrib.ratelimit.v2
 
 import scala.concurrent.duration._
 
+import cats.effect.Async
+import cats.effect.Fiber
 import cats.effect.Resource
+import cats.effect.Sync
 import cats.effect.Temporal
 import cats.effect.kernel.Deferred
+import cats.effect.kernel.Outcome
 import cats.effect.kernel.Unique
 import cats.effect.std.MapRef
 import cats.effect.std.Queue
@@ -54,34 +58,46 @@ object Limiter {
 
   def limiter[F[_], A](
       limitFunction: LimitFunction[F, A],
-      supervisor: Supervisor[F],
-      mapRef: MapRef[F, Unique.Token, Option[SupervisedState[F]]],
-      queue: Queue[F, Unique.Token],
       limit: Int,
       parallelism: Int
-  )(implicit F: Temporal[F]): Resource[F, Limiter[F, A]] = {
+  )(implicit F: Async[F]): Resource[F, Limiter[F, A]] = {
 
-    val stream = Stream.fromQueueUnterminated(queue, limit).parEvalMap(parallelism) { fid =>
-      mapRef(fid).get.flatMap {
-        case Some(Waiting(signal)) =>
-          signal.complete(fid) *> F.pure(println(s"SIG $fid DONE"))
-        case _ =>
-          // This is a leak? Since signal is never completed, or the caller will destroy the Deferred at submit?
-          mapRef(fid).set(Cancelled.some).void
-      }
-    }
+    for {
+      supervisor <- Supervisor[F]
+      mapRef <- Resource.eval(
+        MapRef.ofScalaConcurrentTrieMap[F, Unique.Token, SupervisedState[F, A]])
+      queue <- Resource.eval(Queue.unbounded[F, Unique.Token])
+      stream =
+        Stream.fromQueueUnterminated(queue, limit).parEvalMap(parallelism) { fid =>
+          mapRef(fid).get.flatMap {
+            case Some(Waiting(task, signal)) =>
+              supervisor
+                .supervise(
+                  task
+                )
+                .flatMap(fiber =>
+                  mapRef(fid).set(Running(fiber).some) *>
+                    fiber.join.flatMap(signal.complete))
+                .void
 
-    Stream(LimiterImpl(limitFunction, supervisor, mapRef, queue))
-      .concurrently(stream)
-      .compile
-      .resource
-      .lastOrError
+            case _ => F.pure(())
+          }
+        }
+
+      limiter <- Stream(LimiterImpl(limitFunction, supervisor, mapRef, queue))
+        .concurrently(stream)
+        .compile
+        .resource
+        .lastOrError
+
+    } yield limiter
+
   }
 
   private case class LimiterImpl[F[_], A](
       limitFunction: LimitFunction[F, A],
       supervisor: Supervisor[F],
-      mapRef: MapRef[F, Unique.Token, Option[SupervisedState[F]]],
+      mapRef: MapRef[F, Unique.Token, Option[SupervisedState[F, A]]],
       queue: Queue[F, Unique.Token]
   )(implicit F: Temporal[F])
       extends Limiter[F, A] {
@@ -89,21 +105,25 @@ object Limiter {
     def submit(task: F[A]): F[A] = {
 
       F.unique.flatMap { fid =>
-        Deferred[F, Unique.Token].flatMap { startSignal =>
-          val sTask = startSignal.get *> task // *> ??? // lfLoop(fid, task)
+        Deferred[F, Outcome[F, Throwable, A]].flatMap { signal =>
+          val cancellation = mapRef(fid).get.flatMap {
+            case Some(Running(fiber)) =>
+              fiber.cancel *> mapRef(fid).set(Cancelled.some)
+            case Some(Waiting(_, signal)) =>
+              signal.complete(Outcome.canceled) *> mapRef(fid).set(Cancelled.some)
+            case _ => F.pure(())
+          }
 
-          val pipeline = for {
-            f <- supervisor.supervise(
-              sTask
-            ) // Run and Forget, semantically blocked until the streaming takes from Queue
-            _ <- mapRef(fid)
-              .getAndSet(Waiting[F](startSignal).some)
+          val pipeline =
+            mapRef(fid)
+              .set(Waiting[F, A](task, signal).some)
               .flatMap(_ => queue.offer(fid))
-            res <- f.join.flatMap(_.embedError)
+              .flatMap(_ => signal.get.flatMap(_.embedError))
 
-          } yield res
-
-          F.onCancel(pipeline, mapRef(fid).set(Cancelled.some))
+          F.onCancel(
+            pipeline,
+            cancellation
+          )
 
         }
       }
@@ -112,9 +132,11 @@ object Limiter {
 
   }
 
-  sealed trait SupervisedState[+F[_]]
+  sealed trait SupervisedState[+F[A], +A]
 
-  case object Cancelled extends SupervisedState[Nothing]
-  case class Waiting[F[_]](signal: Deferred[F, Unique.Token]) extends SupervisedState[F]
+  case object Cancelled extends SupervisedState[Nothing, Nothing]
+  case class Waiting[F[_], A](task: F[A], signal: Deferred[F, Outcome[F, Throwable, A]])
+      extends SupervisedState[F, A]
+  case class Running[F[_], A](fiber: Fiber[F, Throwable, A]) extends SupervisedState[F, A]
 
 }
