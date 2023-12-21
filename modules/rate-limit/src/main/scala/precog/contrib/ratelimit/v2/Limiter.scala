@@ -70,7 +70,6 @@ object Limiter {
         Stream.fromQueueUnterminated(queue, limit).parEvalMap(parallelism) { fid =>
           def req: F[Unit] = mapRef(fid).get.flatMap {
             case Some(Waiting(task, signal)) =>
-              println("Waiting")
               limitFunction.request.flatMap {
                 case Left(i) =>
                   F.realTimeInstant.flatMap { now =>
@@ -92,7 +91,7 @@ object Limiter {
 
               }
 
-            case a =>
+            case _ =>
               F.pure(())
           }
 
