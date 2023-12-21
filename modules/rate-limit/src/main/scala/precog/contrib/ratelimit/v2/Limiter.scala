@@ -16,12 +16,9 @@
 
 package precog.contrib.ratelimit.v2
 
-import scala.concurrent.duration._
-
 import cats.effect.Async
 import cats.effect.Fiber
 import cats.effect.Resource
-import cats.effect.Sync
 import cats.effect.Temporal
 import cats.effect.kernel.Deferred
 import cats.effect.kernel.Outcome
