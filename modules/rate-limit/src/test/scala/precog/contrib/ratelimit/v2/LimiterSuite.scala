@@ -44,6 +44,8 @@ class LimiterSuite extends CatsEffectSuite {
 
     }
 
+    ???
+    /*
     Supervisor[IO].use { supervisor =>
       MapRef.ofScalaConcurrentTrieMap[IO, Unique.Token, SupervisedState[IO]].flatMap { mapRef =>
         Queue.unbounded[IO, Unique.Token].flatMap { queue =>
@@ -68,6 +70,7 @@ class LimiterSuite extends CatsEffectSuite {
       }
 
     }
+     */
   }
 
   /*
