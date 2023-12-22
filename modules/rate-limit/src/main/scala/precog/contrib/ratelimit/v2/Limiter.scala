@@ -89,9 +89,9 @@ object Limiter {
                           task
                         )
                         .flatMap(fiber =>
-                          mapRef(fid).update {
-                            case None => None
-                            case _ => Running(fiber).some
+                          mapRef(fid).modify {
+                            case None => (None, fiber.cancel)
+                            case _ => (Running(fiber).some, F.unit)
                           } *>
                             fiber.join.flatMap(signal.complete))
                         .void
