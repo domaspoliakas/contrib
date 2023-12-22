@@ -71,9 +71,9 @@ object Limiter {
           Stream
             .fromQueueUnterminated(queue, limit)
             .parEvalMap(parallelism) { fid =>
-              def req: F[Unit] = mapRef(fid).get.flatMap {
-                case Some(Waiting(task, signal)) =>
-                  limitFunction.request.flatMap {
+              def req: F[Unit] = mapRef(fid).modify {
+                case s @ Some(Waiting(task, signal)) =>
+                  val next = limitFunction.request.flatMap {
                     case Left(i) =>
                       F.realTimeInstant.flatMap { now =>
                         val sleepTime = i.toEpochMilli - now.toEpochMilli
@@ -82,21 +82,28 @@ object Limiter {
                         else
                           req
                       }
+
                     case Right(_) =>
                       supervisor
                         .supervise(
                           task
                         )
                         .flatMap(fiber =>
-                          mapRef(fid).set(Running(fiber).some) *>
+                          mapRef(fid).update {
+                            case None => None
+                            case _ => Running(fiber).some
+                          } *>
                             fiber.join.flatMap(signal.complete))
                         .void
 
                   }
 
-                case _ =>
-                  F.pure(())
-              }
+                  (s, next)
+
+                case s =>
+                  (s, F.unit)
+
+              }.flatten
 
               req
             }
@@ -119,13 +126,13 @@ object Limiter {
 
       F.unique.flatMap { fid =>
         Deferred[F, Outcome[F, Throwable, A]].flatMap { signal =>
-          val cancellation = mapRef(fid).get.flatMap {
+          val cancellation: F[Unit] = mapRef(fid).modify {
             case Some(Running(fiber)) =>
-              fiber.cancel *> mapRef(fid).set(Cancelled.some)
+              (None, fiber.cancel)
             case Some(Waiting(_, signal)) =>
-              signal.complete(Outcome.canceled) *> mapRef(fid).set(Cancelled.some)
-            case _ => F.pure(())
-          }
+              (None, signal.complete(Outcome.canceled).void)
+            case _ => (None, F.unit)
+          }.flatten
 
           val pipeline =
             mapRef(fid)
@@ -147,7 +154,6 @@ object Limiter {
 
   sealed trait SupervisedState[+F[A], +A]
 
-  case object Cancelled extends SupervisedState[Nothing, Nothing]
   case class Waiting[F[_], A](task: F[A], signal: Deferred[F, Outcome[F, Throwable, A]])
       extends SupervisedState[F, A]
   case class Running[F[_], A](fiber: Fiber[F, Throwable, A]) extends SupervisedState[F, A]
