@@ -66,45 +66,45 @@ object Limiter {
       mapRef <- Resource.eval(
         MapRef.ofScalaConcurrentTrieMap[F, Unique.Token, SupervisedState[F, A]])
       queue <- Resource.eval(Queue.unbounded[F, Unique.Token])
-      stream =
-        Stream.fromQueueUnterminated(queue, limit).parEvalMap(parallelism) { fid =>
-          def req: F[Unit] = mapRef(fid).get.flatMap {
-            case Some(Waiting(task, signal)) =>
-              limitFunction.request.flatMap {
-                case Left(i) =>
-                  F.realTimeInstant.flatMap { now =>
-                    val sleepTime = i.toEpochMilli - now.toEpochMilli
-                    if (sleepTime > 0)
-                      F.sleep(sleepTime.millis) *> req
-                    else
-                      req
-                  }
-                case Right(_) =>
-                  supervisor
-                    .supervise(
-                      task
-                    )
-                    .flatMap(fiber =>
-                      mapRef(fid).set(Running(fiber).some) *>
-                        fiber.join.flatMap(signal.complete))
-                    .void
+      _ <-
+        F.background(
+          Stream
+            .fromQueueUnterminated(queue, limit)
+            .parEvalMap(parallelism) { fid =>
+              def req: F[Unit] = mapRef(fid).get.flatMap {
+                case Some(Waiting(task, signal)) =>
+                  limitFunction.request.flatMap {
+                    case Left(i) =>
+                      F.realTimeInstant.flatMap { now =>
+                        val sleepTime = i.toEpochMilli - now.toEpochMilli
+                        if (sleepTime > 0)
+                          F.sleep(sleepTime.millis) *> req
+                        else
+                          req
+                      }
+                    case Right(_) =>
+                      supervisor
+                        .supervise(
+                          task
+                        )
+                        .flatMap(fiber =>
+                          mapRef(fid).set(Running(fiber).some) *>
+                            fiber.join.flatMap(signal.complete))
+                        .void
 
+                  }
+
+                case _ =>
+                  F.pure(())
               }
 
-            case _ =>
-              F.pure(())
-          }
+              req
+            }
+            .compile
+            .drain
+        )
 
-          req
-        }
-
-      limiter <- Stream(LimiterImpl(supervisor, mapRef, queue))
-        .concurrently(stream)
-        .compile
-        .resource
-        .lastOrError
-
-    } yield limiter
+    } yield LimiterImpl(supervisor, mapRef, queue)
 
   }
 
