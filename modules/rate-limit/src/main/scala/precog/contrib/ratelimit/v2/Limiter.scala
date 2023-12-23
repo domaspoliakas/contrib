@@ -19,7 +19,6 @@ package precog.contrib.ratelimit.v2
 import scala.concurrent.duration._
 
 import cats.effect.Async
-import cats.effect.Fiber
 import cats.effect.Resource
 import cats.effect.Temporal
 import cats.effect.kernel.Deferred
@@ -70,43 +69,38 @@ object Limiter {
         F.background(
           Stream
             .fromQueueUnterminated(queue, limit)
-            .parEvalMap(parallelism) { fid =>
-              def req: F[Unit] = mapRef(fid).modify {
-                case s @ Some(Waiting(task, signal)) =>
-                  val next = limitFunction.request.flatMap {
-                    case Left(i) =>
-                      F.realTimeInstant.flatMap { now =>
-                        val sleepTime = i.toEpochMilli - now.toEpochMilli
-                        if (sleepTime > 0)
-                          F.sleep(sleepTime.millis) *> req
-                        else
-                          req
-                      }
-
-                    case Right(_) =>
-                      supervisor
-                        .supervise(
-                          task
-                        )
-                        .flatMap(fiber =>
-                          mapRef(fid).modify {
-                            case None => (None, fiber.cancel)
-                            case _ => (Running(fiber).some, F.unit)
-                          } *>
-                            fiber.join.flatMap(signal.complete))
-                        .void
-
+            .evalMap { fid =>
+              def req: F[F[Unit]] = limitFunction.request.flatMap {
+                case Left(i) =>
+                  F.realTimeInstant.flatMap { now =>
+                    val sleepTime = i.toEpochMilli - now.toEpochMilli
+                    if (sleepTime > 0)
+                      F.sleep(sleepTime.millis) *> req
+                    else
+                      req
                   }
 
-                  (s, next)
+                case Right(_) =>
+                  Deferred[F, Unit].flatMap { cancelSignal =>
+                    mapRef(fid).modify {
+                      case Some(Waiting(task, signal)) =>
+                        (
+                          Running(cancelSignal).some,
+                          F.raceOutcome(task, cancelSignal.get)
+                            .flatMap {
+                              case Left(out) => signal.complete(out)
+                              case _ => signal.complete(Outcome.canceled)
+                            }
+                            .void)
+                      case s => (s, F.unit)
 
-                case s =>
-                  (s, F.unit)
-
-              }.flatten
+                    }
+                  }
+              }
 
               req
             }
+            .parEvalMap(parallelism)(task => task)
             .compile
             .drain
         )
@@ -127,10 +121,10 @@ object Limiter {
       F.unique.flatMap { fid =>
         Deferred[F, Outcome[F, Throwable, A]].flatMap { signal =>
           val cancellation: F[Unit] = mapRef(fid).modify {
-            case Some(Running(fiber)) =>
-              (None, fiber.cancel)
-            case Some(Waiting(_, signal)) =>
-              (None, signal.complete(Outcome.canceled).void)
+            case Some(Running(cancelSignal)) =>
+              (None, cancelSignal.complete(()).void)
+            case Some(Waiting(_, submitSignal)) =>
+              (None, submitSignal.complete(Outcome.canceled).void)
             case _ => (None, F.unit)
           }.flatten
 
@@ -154,8 +148,8 @@ object Limiter {
 
   sealed trait SupervisedState[+F[A], +A]
 
-  case class Waiting[F[_], A](task: F[A], signal: Deferred[F, Outcome[F, Throwable, A]])
+  case class Waiting[F[_], A](task: F[A], submitSignal: Deferred[F, Outcome[F, Throwable, A]])
       extends SupervisedState[F, A]
-  case class Running[F[_], A](fiber: Fiber[F, Throwable, A]) extends SupervisedState[F, A]
+  case class Running[F[_]](cancelSignal: Deferred[F, Unit]) extends SupervisedState[F, Nothing]
 
 }
