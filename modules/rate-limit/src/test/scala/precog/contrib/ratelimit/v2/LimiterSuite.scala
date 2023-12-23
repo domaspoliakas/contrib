@@ -74,6 +74,7 @@ class LimiterSuite extends CatsEffectSuite {
             f1 <- limiter.submit(task).start
             _ <- IO.sleep(1.seconds)
             _ <- f1.cancel
+            _ <- IO.sleep(100.milli)
             res <- ref.get
           } yield assert(res == -1)
 
@@ -308,6 +309,7 @@ class LimiterSuite extends CatsEffectSuite {
             _ <- ref.update(_ + 1)
             _ <- IO.sleep(1.second)
             _ <- f2.cancel
+            _ <- IO.sleep(100.millis)
             v <- ref.get
             _ <- f3.join
             v2 <- ref.get
