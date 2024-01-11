@@ -63,9 +63,6 @@ object Limiter {
         MapRef.ofScalaConcurrentTrieMap[F, Unique.Token, SupervisedState[F, A]])
       channel <- Resource.eval(Channel.unbounded[F, Unique.Token])
 
-      // signalize the shutdown through deferred
-      // close channel
-
       pipeline =
         channel
           .stream
@@ -100,16 +97,18 @@ object Limiter {
                         case Some(Waiting(task, signal)) =>
                           (
                             Running(cancelSignal).some,
-                            F.guaranteeCase(poll(F.raceOutcome(task, cancelSignal.get))) { oc =>
-                              oc.fold(
-                                signal.complete(Outcome.canceled),
-                                e => signal.complete(Outcome.errored(e)),
-                                o =>
-                                  o.flatMap {
-                                    case Left(t) => signal.complete(t)
-                                    case _ => signal.complete(Outcome.canceled)
-                                  }
-                              ).void
+                            F.guaranteeCase(poll(
+                              F.raceOutcome(task, F.race(cancelSignal.get, channel.closed)))) {
+                              oc =>
+                                oc.fold(
+                                  signal.complete(Outcome.canceled),
+                                  e => signal.complete(Outcome.errored(e)),
+                                  o =>
+                                    o.flatMap {
+                                      case Left(t) => signal.complete(t)
+                                      case _ => signal.complete(Outcome.canceled)
+                                    }
+                                ).void
 
                             }.void
                           )

@@ -19,9 +19,12 @@ package precog.contrib.ratelimit.v2
 import java.time.Instant
 import scala.concurrent.duration._
 
+import cats.effect.Fiber
 import cats.effect.IO
 import cats.effect.Resource
+import cats.effect.kernel.Deferred
 import cats.effect.kernel.Ref
+import cats.effect.std.CountDownLatch
 import cats.implicits._
 import munit.CatsEffectSuite
 
@@ -346,6 +349,63 @@ class LimiterSuite extends CatsEffectSuite {
           } yield assert(i == 1 && updated)
 
       }
+
+  }
+
+  test("When the resource is finalized all the waiting tasks should stop") {
+
+    for {
+      latch <- Deferred[IO, Unit]
+      fibersRef <- Ref.of[IO, List[Fiber[IO, Throwable, Unit]]](Nil)
+      lf: LimitFunction[IO, Unit] = new LimitFunction[IO, Unit] {
+
+        def request: IO[Option[Instant]] =
+          latch.complete(()) *> IO.realTimeInstant.map(i => i.plusSeconds(1).some)
+
+        def update(a: Unit): IO[Unit] = IO.unit
+
+      }
+
+      lim = Limiter.limiter[IO, Unit](lf, 4).use { limiter =>
+        List
+          .fill(4)(IO.never[Unit])
+          .traverse(fu =>
+            limiter.submit(fu).start.flatMap(fib => fibersRef.update(fib :: _))) *> IO.never
+      }
+      limFiber <- lim.start
+      _ <- latch.get
+      _ <- limFiber.cancel
+      _ <- fibersRef.get.flatMap(_.traverse(_.join))
+    } yield ()
+
+  }
+
+  test("When the resource is finalized all the executing tasks should stop immediately") {
+
+    val lf: LimitFunction[IO, Unit] = new LimitFunction[IO, Unit] {
+
+      def request: IO[Option[Instant]] = IO(None)
+
+      def update(a: Unit): IO[Unit] = IO.unit
+
+    }
+
+    for {
+      latch <- CountDownLatch[IO](4)
+      fibersRef <- Ref.of[IO, List[Fiber[IO, Throwable, Unit]]](Nil)
+
+      lim = Limiter.limiter[IO, Unit](lf, 4).use { limiter =>
+        List
+          .fill(4)((latch.release *> IO.never[Unit]))
+          .traverse(fu =>
+            limiter.submit(fu).start.flatMap(fib => fibersRef.update(fib :: _))) *> IO.never
+      }
+
+      limFiber <- lim.start
+      _ <- latch.await
+      _ <- limFiber.cancel
+      _ <- fibersRef.get.flatMap(_.traverse(_.join))
+    } yield ()
 
   }
 
