@@ -25,9 +25,8 @@ import cats.effect.kernel.Deferred
 import cats.effect.kernel.Outcome
 import cats.effect.kernel.Unique
 import cats.effect.std.MapRef
-import cats.effect.std.Queue
 import cats.implicits._
-import fs2.Stream
+import fs2.concurrent.Channel
 
 trait Limiter[F[_], A] {
 
@@ -55,18 +54,18 @@ object Limiter {
 
   def limiter[F[_], A](
       limitFunction: LimitFunction[F, A],
-      limit: Int,
       parallelism: Int
   )(implicit F: Async[F]): Resource[F, Limiter[F, A]] = {
 
     for {
       mapRef <- Resource.eval(
         MapRef.ofScalaConcurrentTrieMap[F, Unique.Token, SupervisedState[F, A]])
-      queue <- Resource.eval(Queue.unbounded[F, Unique.Token])
+      channel <- Resource.eval(Channel.unbounded[F, Unique.Token])
+
       _ <-
         F.background(
-          Stream
-            .fromQueueUnterminated(queue, limit)
+          channel
+            .stream
             .evalMap { fid =>
               def req: F[Unit] = limitFunction.request.flatMap {
                 case Some(i) =>
@@ -111,15 +110,15 @@ object Limiter {
             .parEvalMap(parallelism)(task => task)
             .compile
             .drain
-        )
+        ).onFinalize(channel.close.void)
 
-    } yield LimiterImpl(mapRef, queue, limitFunction)
+    } yield LimiterImpl(mapRef, channel, limitFunction)
 
   }
 
   private case class LimiterImpl[F[_], A](
       mapRef: MapRef[F, Unique.Token, Option[SupervisedState[F, A]]],
-      queue: Queue[F, Unique.Token],
+      channel: Channel[F, Unique.Token],
       limitFunction: LimitFunction[F, A]
   )(implicit F: Temporal[F])
       extends Limiter[F, A] {
@@ -142,7 +141,7 @@ object Limiter {
           val pipeline =
             mapRef(fid)
               .set(Waiting[F, A](uncTask, signal).some)
-              .flatMap(_ => queue.offer(fid))
+              .flatMap(_ => channel.send(fid))
               .flatMap(_ => signal.get.flatMap(_.embedError))
 
           F.onCancel(

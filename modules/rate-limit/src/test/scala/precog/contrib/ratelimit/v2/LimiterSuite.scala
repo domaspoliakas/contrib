@@ -37,19 +37,16 @@ class LimiterSuite extends CatsEffectSuite {
 
     }
 
-    Limiter
-      .limiter[IO, Unit](lf, 1, 1)
-      .evalMap(l => Ref.of[IO, Int](0).map(ref => (l, ref)))
-      .use {
-        case (limiter, ref) =>
-          val task = ref.update(_ + 1)
+    Limiter.limiter[IO, Unit](lf, 1).evalMap(l => Ref.of[IO, Int](0).map(ref => (l, ref))).use {
+      case (limiter, ref) =>
+        val task = ref.update(_ + 1)
 
-          for {
-            _ <- limiter.submit(task)
-            res <- ref.get
-          } yield assert(res == 1)
+        for {
+          _ <- limiter.submit(task)
+          res <- ref.get
+        } yield assert(res == 1)
 
-      }
+    }
 
   }
 
@@ -63,22 +60,19 @@ class LimiterSuite extends CatsEffectSuite {
 
     }
 
-    Limiter
-      .limiter[IO, Unit](lf, 1, 1)
-      .evalMap(l => Ref.of[IO, Int](0).map(ref => (l, ref)))
-      .use {
-        case (limiter, ref) =>
-          val task = (IO.sleep(5.seconds) *> ref.update(_ + 1)).onCancel(ref.update(_ - 1).void)
+    Limiter.limiter[IO, Unit](lf, 1).evalMap(l => Ref.of[IO, Int](0).map(ref => (l, ref))).use {
+      case (limiter, ref) =>
+        val task = (IO.sleep(5.seconds) *> ref.update(_ + 1)).onCancel(ref.update(_ - 1).void)
 
-          for {
-            f1 <- limiter.submit(task).start
-            _ <- IO.sleep(1.seconds)
-            _ <- f1.cancel
-            _ <- IO.sleep(100.milli)
-            res <- ref.get
-          } yield assert(res == -1)
+        for {
+          f1 <- limiter.submit(task).start
+          _ <- IO.sleep(1.seconds)
+          _ <- f1.cancel
+          _ <- IO.sleep(100.milli)
+          res <- ref.get
+        } yield assert(res == -1)
 
-      }
+    }
 
   }
 
@@ -93,7 +87,7 @@ class LimiterSuite extends CatsEffectSuite {
     }
 
     Limiter
-      .limiter[IO, Unit](lf, 1, 1)
+      .limiter[IO, Unit](lf, 1)
       .evalMap(l => Ref.of[IO, String]("Nothing").map(ref => (l, ref)))
       .use {
         case (limiter, ref) =>
@@ -123,7 +117,7 @@ class LimiterSuite extends CatsEffectSuite {
     }
 
     Limiter
-      .limiter[IO, Unit](lf, 1, 1)
+      .limiter[IO, Unit](lf, 1)
       .evalMap(l => Ref.of[IO, (Long, Long)]((0, 0)).map(ref => (l, ref)))
       .use {
         case (limiter, ref) =>
@@ -159,7 +153,7 @@ class LimiterSuite extends CatsEffectSuite {
     }
 
     Limiter
-      .limiter[IO, Unit](lf, 1, 1)
+      .limiter[IO, Unit](lf, 1)
       .evalMap(l => Ref.of[IO, (Long, Long, Long)]((0, 0, 0)).map(ref => (l, ref)))
       .use {
         case (limiter, ref) =>
@@ -207,7 +201,7 @@ class LimiterSuite extends CatsEffectSuite {
 
     }
 
-    Limiter.limiter[IO, Unit](lf, 1, 1).use { limiter =>
+    Limiter.limiter[IO, Unit](lf, 1).use { limiter =>
       val task = IO.println("I'm being executed")
 
       for {
@@ -237,7 +231,7 @@ class LimiterSuite extends CatsEffectSuite {
 
         }
 
-        Limiter.limiter[IO, Unit](lf, 1, 1).map(l => (l, ref))
+        Limiter.limiter[IO, Unit](lf, 1).map(l => (l, ref))
       }
       .use {
         case (limiter, ref) =>
@@ -285,7 +279,7 @@ class LimiterSuite extends CatsEffectSuite {
 
         }
 
-        Limiter.limiter[IO, Unit](lf, 1, 1).map(l => (l, ref))
+        Limiter.limiter[IO, Unit](lf, 1).map(l => (l, ref))
       }
       .use {
         case (limiter, ref) =>
@@ -336,7 +330,7 @@ class LimiterSuite extends CatsEffectSuite {
 
         }
 
-        Limiter.limiter[IO, Unit](lf, 1, 1).map(l => (l, ref))
+        Limiter.limiter[IO, Unit](lf, 1).map(l => (l, ref))
       }
       .use {
         case (limiter, ref) =>
