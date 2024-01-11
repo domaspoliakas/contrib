@@ -25,7 +25,8 @@ import cats.effect.kernel.Deferred
 import cats.effect.kernel.Outcome
 import cats.effect.kernel.Unique
 import cats.effect.std.MapRef
-import cats.implicits._
+import cats.effect.syntax.all._
+import cats.syntax.all._
 import fs2.concurrent.Channel
 
 trait Limiter[F[_], A] {
@@ -62,22 +63,37 @@ object Limiter {
         MapRef.ofScalaConcurrentTrieMap[F, Unique.Token, SupervisedState[F, A]])
       channel <- Resource.eval(Channel.unbounded[F, Unique.Token])
 
-      _ <-
-        F.background(
-          channel
-            .stream
-            .evalMap { fid =>
-              def req: F[Unit] = limitFunction.request.flatMap {
-                case Some(i) =>
-                  F.realTimeInstant.flatMap { now =>
-                    val sleepTime = i.toEpochMilli - now.toEpochMilli
-                    if (sleepTime > 0)
-                      F.sleep(sleepTime.millis) *> req
-                    else
-                      req
-                  }
+      // signalize the shutdown through deferred
+      // close channel
 
-                case None =>
+      pipeline =
+        channel
+          .stream
+          .evalMap { fid =>
+            val clean: F[F[Unit]] =
+              mapRef(fid)
+                .modify {
+                  case Some(Waiting(_, signal)) =>
+                    (None, signal.complete(Outcome.canceled).void)
+                  case _ =>
+                    (None, F.unit)
+                }
+                .flatten
+                .uncancelable
+                .pure[F]
+
+            def req: F[F[Unit]] = limitFunction.request.flatMap {
+              case Some(i) =>
+                F.realTimeInstant.flatMap { now =>
+                  val sleepTime = i.toEpochMilli - now.toEpochMilli
+                  if (sleepTime > 0)
+                    F.sleep(sleepTime.millis) *> action
+                  else
+                    action
+                }
+
+              case None =>
+                val exec: F[Unit] =
                   Deferred[F, Unit].flatMap { cancelSignal =>
                     F.uncancelable { poll =>
                       mapRef(fid).modify {
@@ -99,18 +115,25 @@ object Limiter {
                           )
                         case s => (s, F.unit)
 
-                      }
-                    }.flatten
+                      }.flatten
+                    }
                   }
 
-              }
+                F.pure(exec)
 
-              F.pure(req)
             }
-            .parEvalMap(parallelism)(task => task)
-            .compile
-            .drain
-        ).onFinalize(channel.close.void)
+
+            def action = channel.isClosed.ifM(clean, req)
+
+            action
+
+          }
+          .parEvalMap(parallelism)(task => task)
+          .compile
+          .drain
+
+      _ <- Resource.make(F.start(pipeline))(fib =>
+        channel.close *> fib.join.flatMap(_.embedError).void)
 
     } yield LimiterImpl(mapRef, channel, limitFunction)
 
