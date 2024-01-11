@@ -30,8 +30,8 @@ class LimiterSuite extends CatsEffectSuite {
   test("Limiter submit request succesfully") {
     val lf: LimitFunction[IO, Unit] = new LimitFunction[IO, Unit] {
 
-      def request: IO[Either[Instant, IO[Unit]]] =
-        IO(IO.unit.asRight)
+      def request: IO[Option[Instant]] =
+        IO(None)
 
       def update(a: Unit): IO[Unit] = IO.unit
 
@@ -56,8 +56,8 @@ class LimiterSuite extends CatsEffectSuite {
   test("Limiter cancels request succesfully") {
     val lf: LimitFunction[IO, Unit] = new LimitFunction[IO, Unit] {
 
-      def request: IO[Either[Instant, IO[Unit]]] =
-        IO(IO.unit.asRight)
+      def request: IO[Option[Instant]] =
+        IO(None)
 
       def update(a: Unit): IO[Unit] = IO.unit
 
@@ -85,8 +85,8 @@ class LimiterSuite extends CatsEffectSuite {
   test("Limiter handle multiple submits") {
     val lf: LimitFunction[IO, Unit] = new LimitFunction[IO, Unit] {
 
-      def request: IO[Either[Instant, IO[Unit]]] =
-        IO(IO.unit.asRight)
+      def request: IO[Option[Instant]] =
+        IO(None)
 
       def update(a: Unit): IO[Unit] = IO.unit
 
@@ -115,8 +115,8 @@ class LimiterSuite extends CatsEffectSuite {
   test("Limiter respect FIFO semantics") {
     val lf: LimitFunction[IO, Unit] = new LimitFunction[IO, Unit] {
 
-      def request: IO[Either[Instant, IO[Unit]]] =
-        IO(IO.unit.asRight)
+      def request: IO[Option[Instant]] =
+        IO(None)
 
       def update(a: Unit): IO[Unit] = IO.unit
 
@@ -151,8 +151,8 @@ class LimiterSuite extends CatsEffectSuite {
   test("Cancel respect queue semantics") {
     val lf: LimitFunction[IO, Unit] = new LimitFunction[IO, Unit] {
 
-      def request: IO[Either[Instant, IO[Unit]]] =
-        IO(IO.unit.asRight)
+      def request: IO[Option[Instant]] =
+        IO(None)
 
       def update(a: Unit): IO[Unit] = IO.unit
 
@@ -200,8 +200,8 @@ class LimiterSuite extends CatsEffectSuite {
   test("Limiter loops uncompletable request (by limit function) until cancelment ") {
     val lf: LimitFunction[IO, Unit] = new LimitFunction[IO, Unit] {
 
-      def request: IO[Either[Instant, IO[Unit]]] =
-        IO.realTimeInstant.map(i => i.plusSeconds(1).asLeft)
+      def request: IO[Option[Instant]] =
+        IO.realTimeInstant.map(i => i.plusSeconds(1).some)
 
       def update(a: Unit): IO[Unit] = IO.unit
 
@@ -227,10 +227,10 @@ class LimiterSuite extends CatsEffectSuite {
       .flatMap { ref =>
         val lf: LimitFunction[IO, Unit] = new LimitFunction[IO, Unit] {
 
-          def request: IO[Either[Instant, IO[Unit]]] =
+          def request: IO[Option[Instant]] =
             ref.get.flatMap {
-              case 0 => IO.realTimeInstant.map(i => i.plusSeconds(1).asLeft)
-              case _ => IO(IO.unit.asRight)
+              case 0 => IO.realTimeInstant.map(i => i.plusSeconds(1).some)
+              case _ => IO(None)
             }
 
           def update(a: Unit): IO[Unit] = IO.unit
@@ -275,10 +275,10 @@ class LimiterSuite extends CatsEffectSuite {
       .flatMap { ref =>
         val lf: LimitFunction[IO, Unit] = new LimitFunction[IO, Unit] {
 
-          def request: IO[Either[Instant, IO[Unit]]] =
+          def request: IO[Option[Instant]] =
             ref.get.flatMap {
-              case 0 => IO.realTimeInstant.map(i => i.plusSeconds(1).asLeft)
-              case _ => IO(IO.unit.asRight)
+              case 0 => IO.realTimeInstant.map(i => i.plusSeconds(1).some)
+              case _ => IO(None)
             }
 
           def update(a: Unit): IO[Unit] = IO.unit
@@ -314,6 +314,42 @@ class LimiterSuite extends CatsEffectSuite {
             _ <- f3.join
             v2 <- ref.get
           } yield assert((v, v2) == (11, 111))
+
+      }
+
+  }
+
+  test("Update executes succesfully") {
+
+    Resource
+      .eval(Ref.of[IO, (Long, Boolean)](0L -> false))
+      .flatMap { ref =>
+        val lf: LimitFunction[IO, Unit] = new LimitFunction[IO, Unit] {
+
+          def request: IO[Option[Instant]] =
+            ref.get.flatMap {
+              case (0, _) => IO.realTimeInstant.map(i => i.plusSeconds(1).some)
+              case _ => IO(None)
+            }
+
+          def update(a: Unit): IO[Unit] = ref.update { case (i, _) => i -> true }
+
+        }
+
+        Limiter.limiter[IO, Unit](lf, 1, 1).map(l => (l, ref))
+      }
+      .use {
+        case (limiter, ref) =>
+          val task = IO.sleep(1.second) *> IO.unit
+
+          for {
+            f1 <- limiter.submit(task).start
+            _ <- IO.sleep(2.seconds)
+            _ <- ref.update { case (i, b) => (i + 1, b) }
+            _ <- f1.join
+            _ <- IO.sleep(1.second)
+            (i, updated) <- ref.get
+          } yield assert(i == 1 && updated)
 
       }
 

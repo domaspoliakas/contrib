@@ -26,7 +26,6 @@ import cats.effect.kernel.Outcome
 import cats.effect.kernel.Unique
 import cats.effect.std.MapRef
 import cats.effect.std.Queue
-import cats.effect.std.Supervisor
 import cats.implicits._
 import fs2.Stream
 
@@ -61,7 +60,6 @@ object Limiter {
   )(implicit F: Async[F]): Resource[F, Limiter[F, A]] = {
 
     for {
-      supervisor <- Supervisor[F]
       mapRef <- Resource.eval(
         MapRef.ofScalaConcurrentTrieMap[F, Unique.Token, SupervisedState[F, A]])
       queue <- Resource.eval(Queue.unbounded[F, Unique.Token])
@@ -70,8 +68,8 @@ object Limiter {
           Stream
             .fromQueueUnterminated(queue, limit)
             .evalMap { fid =>
-              def req: F[F[Unit]] = limitFunction.request.flatMap {
-                case Left(i) =>
+              def req: F[Unit] = limitFunction.request.flatMap {
+                case Some(i) =>
                   F.realTimeInstant.flatMap { now =>
                     val sleepTime = i.toEpochMilli - now.toEpochMilli
                     if (sleepTime > 0)
@@ -80,39 +78,49 @@ object Limiter {
                       req
                   }
 
-                case Right(_) =>
+                case None =>
                   Deferred[F, Unit].flatMap { cancelSignal =>
-                    mapRef(fid).modify {
-                      case Some(Waiting(task, signal)) =>
-                        (
-                          Running(cancelSignal).some,
-                          F.raceOutcome(task, cancelSignal.get)
-                            .flatMap {
-                              case Left(out) => signal.complete(out)
-                              case _ => signal.complete(Outcome.canceled)
-                            }
-                            .void)
-                      case s => (s, F.unit)
+                    F.uncancelable { poll =>
+                      mapRef(fid).modify {
+                        case Some(Waiting(task, signal)) =>
+                          (
+                            Running(cancelSignal).some,
+                            F.guaranteeCase(poll(F.raceOutcome(task, cancelSignal.get))) { oc =>
+                              oc.fold(
+                                signal.complete(Outcome.canceled),
+                                e => signal.complete(Outcome.errored(e)),
+                                o =>
+                                  o.flatMap {
+                                    case Left(t) => signal.complete(t)
+                                    case _ => signal.complete(Outcome.canceled)
+                                  }
+                              ).void
 
-                    }
+                            }.void
+                          )
+                        case s => (s, F.unit)
+
+                      }
+                    }.flatten
                   }
+
               }
 
-              req
+              F.pure(req)
             }
             .parEvalMap(parallelism)(task => task)
             .compile
             .drain
         )
 
-    } yield LimiterImpl(supervisor, mapRef, queue)
+    } yield LimiterImpl(mapRef, queue, limitFunction)
 
   }
 
   private case class LimiterImpl[F[_], A](
-      supervisor: Supervisor[F],
       mapRef: MapRef[F, Unique.Token, Option[SupervisedState[F, A]]],
-      queue: Queue[F, Unique.Token]
+      queue: Queue[F, Unique.Token],
+      limitFunction: LimitFunction[F, A]
   )(implicit F: Temporal[F])
       extends Limiter[F, A] {
 
@@ -128,9 +136,12 @@ object Limiter {
             case _ => (None, F.unit)
           }.flatten
 
+          val uncTask =
+            F.uncancelable(poll => poll(task).flatTap(limitFunction.update))
+
           val pipeline =
             mapRef(fid)
-              .set(Waiting[F, A](task, signal).some)
+              .set(Waiting[F, A](uncTask, signal).some)
               .flatMap(_ => queue.offer(fid))
               .flatMap(_ => signal.get.flatMap(_.embedError))
 

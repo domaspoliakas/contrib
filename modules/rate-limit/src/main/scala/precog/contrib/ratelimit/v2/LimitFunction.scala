@@ -18,7 +18,6 @@ package precog.contrib.ratelimit.v2
 
 import java.time.Instant
 
-import cats.Functor
 import cats.Semigroup
 import cats.effect.Spawn
 import cats.effect.instances.all._
@@ -35,7 +34,7 @@ trait LimitFunction[F[_], -A] { self =>
    * if the task is not, executed for any reason and `Left` to indicate the limit has been
    * reached along with a time in the future at which `request` may be attempted again.
    */
-  def request: F[Either[Instant, F[Unit]]]
+  def request: F[Option[Instant]]
 
   /**
    * Update the state of this limit function based on the value produced by the task.
@@ -48,9 +47,9 @@ trait LimitFunction[F[_], -A] { self =>
   /**
    * Transforms the effect type of this limit function using `f`.
    */
-  def mapK[G[_]: Functor](f: F ~> G): LimitFunction[G, A] =
+  def mapK[G[_]](f: F ~> G): LimitFunction[G, A] =
     new LimitFunction[G, A] {
-      def request = f(self.request).nested.map(f(_)).value
+      def request = f(self.request)
       def update(a: A) = f(self.update(a))
     }
 }
@@ -63,13 +62,13 @@ object LimitFunction {
           def bothDeferringErrors(a: F[Unit], b: F[Unit]): F[Unit] =
             (a.attempt, b.attempt).parMapN(_ *> _).rethrow
 
-          def request: F[Either[Instant, F[Unit]]] =
+          def request: F[Option[Instant]] =
             F.uncancelable { poll =>
               poll(F.both(l.request, r.request)).flatMap {
-                case (Left(a), Left(b)) => F.pure(Left(a max b))
-                case (Left(a), Right(fu)) => fu.as(Left(a))
-                case (Right(fu), Left(b)) => fu.as(Left(b))
-                case (Right(fua), Right(fub)) => F.pure(Right(bothDeferringErrors(fua, fub)))
+                case (Some(a), Some(b)) => F.pure(Some(a max b))
+                case (Some(a), _) => F.pure(Some(a))
+                case (_, Some(b)) => F.pure(Some(b))
+                case _ => F.pure(None)
               }
             }
 
