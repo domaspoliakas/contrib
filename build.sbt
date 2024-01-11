@@ -9,6 +9,7 @@ ThisBuild / scmInfo := Some(
 
 val CatsEffectVersion = "3.4.8"
 val CatsRetryVersion = "3.1.0"
+val CatsTimeVersion = "0.5.1"
 val Http4sVersion = "0.23.14"
 val Log4CatsVersion = "2.5.0"
 val MunitCatsEffectVersion = "1.0.7"
@@ -26,6 +27,7 @@ lazy val rateLimit = project
     libraryDependencies ++= Seq(
       "com.github.cb372" %% "cats-retry" % CatsRetryVersion,
       "org.typelevel" %% "cats-effect" % CatsEffectVersion,
+      "org.typelevel" %% "cats-time" % CatsTimeVersion,
       "io.chrisdavenport" %% "rediculous" % RediculousVersion,
       "com.dimafeng" %% "testcontainers-scala-core" % TestContainersVersion % Test,
       "org.scalameta" %% "munit" % MunitVersion % Test,
