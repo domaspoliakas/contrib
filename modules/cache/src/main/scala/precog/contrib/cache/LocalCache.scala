@@ -75,17 +75,20 @@ object LocalCache {
                 s"Expected cache state for '$key' to be 'Writing', instead was $other")))
       }.flatten
 
-    def apply(key: String, in: Resource[F, Response[F]], force: Boolean): F[Response[F]] =
+    def apply(
+        key: String,
+        in: Resource[F, Response[F]],
+        currentVersion: Option[Response[F]]): F[Response[F]] =
       F.deferred[Either[Throwable, F[Response[F]]]].flatMap { d =>
         F.uncancelable { poll =>
           mapRef(key).modify {
             case s @ Some(Writing(result)) =>
               (s, poll(result.get.rethrow.flatten))
 
-            case s @ Some(Available(result)) if !force =>
+            case s @ Some(Available(result)) if currentVersion.isEmpty =>
               (s, result)
 
-            case _ =>
+            case v =>
               val populate =
                 in.use(res => cached(res.body).map(res.withBodyStream)).background.use { join =>
                   val liftCanceled =
@@ -102,7 +105,17 @@ object LocalCache {
                     .flatten
                 }
 
-              (Some(Writing(d)), populate)
+              v match {
+                case Some(Available(res)) if currentVersion.isDefined =>
+                  val result = res.flatMap { r =>
+                    if (r == currentVersion.get) populate else res
+                  }
+                  (Some(Writing(d)), result)
+                case _ =>
+                  (Some(Writing(d)), populate)
+
+              }
+
           }.flatten
         }
       }

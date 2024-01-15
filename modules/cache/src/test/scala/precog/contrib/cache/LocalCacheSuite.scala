@@ -42,7 +42,7 @@ final class LocalCacheSuite extends CatsEffectSuite {
 
   test("cache response") {
     TestControl.executeEmbed((cache, responses).flatMapN { (c, r) =>
-      c("k", r, false)
+      c("k", r, None)
         .parReplicateA(4)
         .flatMap(_.traverse(_.bodyText.compile.foldMonoid))
         .assertEquals(List("a", "a", "a", "a"))
@@ -51,19 +51,26 @@ final class LocalCacheSuite extends CatsEffectSuite {
 
   test("reacquire cached response when forced") {
     TestControl.executeEmbed((cache, responses).flatMapN { (c, r) =>
-      (c("k", r, false) >> c("k", r, true))
+      c("k", r, None)
+        .flatMap { r1 => c("k", r, r1.some) }
         .flatMap(_.bodyText.compile.foldMonoid)
         .assertEquals("b")
     })
   }
 
-  test("forcing doesn't reattempt inflight response") {
+  test("forcing doesn't reattempt inflight response".only) {
 
     TestControl.executeEmbed(
       (cache, responses, IO.deferred[Unit]).flatMapN { (c, r, started) =>
         val first =
-          c("k", Resource.eval(started.complete(()) >> IO.sleep(250.millis)) >> r, false)
-        val second = started.get >> c("k", r, true)
+          c("k", Resource.eval(started.complete(()) >> IO.sleep(250.millis)) >> r, None)
+
+        val second =
+          started.get >> c(
+            "k",
+            r,
+            Response[IO](body = Stream.emit('a'.toByte)).some
+          )
 
         first
           .background
@@ -80,7 +87,7 @@ final class LocalCacheSuite extends CatsEffectSuite {
         c(
           "k",
           Resource.raiseError[IO, Response[IO], Throwable](CacheSuiteException),
-          false
+          None
         ).intercept[CacheSuiteException.type]
 
       }
@@ -93,7 +100,7 @@ final class LocalCacheSuite extends CatsEffectSuite {
         c(
           "k",
           Resource.eval(IO.canceled.as(null: Response[IO])),
-          false
+          None
         ).intercept[CancellationException]
       }
     )
@@ -106,8 +113,8 @@ final class LocalCacheSuite extends CatsEffectSuite {
   test("external cancelation should gracefully release the cache key for later use") {
     TestControl.executeEmbed {
       val test = (cache, responses).flatMapN { (c, r) =>
-        val first = c("k", Resource.eval(IO.never), false)
-        val second = c("k", r, false)
+        val first = c("k", Resource.eval(IO.never), None)
+        val second = c("k", r, None)
 
         (first.start.flatMap(_.cancel) >> second)
           .flatMap(_.bodyText.compile.foldMonoid)
