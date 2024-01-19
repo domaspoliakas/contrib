@@ -58,7 +58,7 @@ final class LocalCacheSuite extends CatsEffectSuite {
     })
   }
 
-  test("forcing doesn't reattempt inflight response".only) {
+  test("forcing doesn't reattempt inflight response") {
 
     TestControl.executeEmbed(
       (cache, responses, IO.deferred[Unit]).flatMapN { (c, r, started) =>
