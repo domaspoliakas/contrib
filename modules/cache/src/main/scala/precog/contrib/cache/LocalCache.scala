@@ -108,7 +108,8 @@ object LocalCache {
                     case None => (s, result)
                     case Some(currValue) =>
                       val res = result.flatMap(r => if (r == currValue) populate else result)
-                      (Some(Writing(d)), res)
+
+                      (Some(Writing(d)), res.flatMap(_ => apply(key, in, None)))
                   }
                 case _ =>
                   (Some(Writing(d)), populate)
