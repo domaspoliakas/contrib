@@ -85,9 +85,6 @@ object LocalCache {
             case s @ Some(Writing(result)) =>
               (s, poll(result.get.rethrow.flatten))
 
-            case s @ Some(Available(result)) if currentVersion.isEmpty =>
-              (s, result)
-
             case v =>
               val populate =
                 in.use(res => cached(res.body).map(res.withBodyStream)).background.use { join =>
@@ -106,11 +103,13 @@ object LocalCache {
                 }
 
               v match {
-                case Some(Available(res)) if currentVersion.isDefined =>
-                  val result = res.flatMap { r =>
-                    if (r == currentVersion.get) populate else res
+                case s @ Some(Available(result)) =>
+                  currentVersion match {
+                    case None => (s, result)
+                    case Some(currValue) =>
+                      val res = result.flatMap(r => if (r == currValue) populate else result)
+                      (Some(Writing(d)), res)
                   }
-                  (Some(Writing(d)), result)
                 case _ =>
                   (Some(Writing(d)), populate)
 
