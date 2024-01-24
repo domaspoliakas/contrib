@@ -27,10 +27,11 @@ import fs2.Chunk
 import fs2.Stream
 import munit.CatsEffectSuite
 import org.http4s.Response
+import org.http4s.Status
 
 final class LocalCacheSuite extends CatsEffectSuite {
 
-  val cache =
+  val cache: IO[Cache[IO, String, Response[IO]]] =
     LocalCache.ByString[IO](_.compile.to(Chunk).map(Stream.chunk))
 
   val responses: IO[Resource[IO, Response[IO]]] =
@@ -125,6 +126,30 @@ final class LocalCacheSuite extends CatsEffectSuite {
       // catch problems
       test.replicateA_(10000)
     }
+  }
+
+  test("versioning") {
+
+    TestControl.executeEmbed {
+
+      cache.flatMap { c =>
+        val first = c.apply("key", Resource.pure(Response(Status.Ok)), None)
+        val second = c.apply("key", Resource.pure(Response(Status.Accepted)), Some(Response(Status.Ok)))
+        val third = c.apply("key", Resource.pure(Response(Status.InternalServerError)), Some(Response(Status.Ok)))
+        val fourth = c.apply("key", Resource.pure(Response(Status.Created)), Some(Response(Status.Accepted)))
+
+        first.map(_.status).assertEquals(Status.Ok) >>
+          // If the version matches then we make the next request
+          second.map(_.status).assertEquals(Status.Accepted) >>
+          // If the version does not match then we _don't_ make the request
+          third.map(_.status).assertEquals(Status.Accepted) >>
+          // Then we make one more request for funsies
+          fourth.map(_.status).assertEquals(Status.Created)
+
+      }
+
+    }
+
   }
 
   //
