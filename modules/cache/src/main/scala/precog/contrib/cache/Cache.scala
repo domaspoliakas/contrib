@@ -19,10 +19,10 @@ package precog.contrib.cache
 import cats.effect.Resource
 
 trait Cache[F[_], K, A] { self =>
-  def apply(key: K, in: Resource[F, A], force: Boolean): F[A]
+  def apply(key: K, in: Resource[F, A], currentVersion: Option[A]): F[A]
 
   def leftMapKey[KK](f: KK => K): Cache[F, KK, A] = new Cache[F, KK, A] {
-    def apply(key: KK, in: Resource[F, A], force: Boolean): F[A] =
-      self.apply(f(key), in, force)
+    def apply(key: KK, in: Resource[F, A], currentVersion: Option[A]): F[A] =
+      self.apply(f(key), in, currentVersion)
   }
 }

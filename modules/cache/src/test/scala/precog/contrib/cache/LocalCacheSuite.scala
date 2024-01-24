@@ -27,10 +27,11 @@ import fs2.Chunk
 import fs2.Stream
 import munit.CatsEffectSuite
 import org.http4s.Response
+import org.http4s.Status
 
 final class LocalCacheSuite extends CatsEffectSuite {
 
-  val cache =
+  val cache: IO[Cache[IO, String, Response[IO]]] =
     LocalCache.ByString[IO](_.compile.to(Chunk).map(Stream.chunk))
 
   val responses: IO[Resource[IO, Response[IO]]] =
@@ -42,7 +43,7 @@ final class LocalCacheSuite extends CatsEffectSuite {
 
   test("cache response") {
     TestControl.executeEmbed((cache, responses).flatMapN { (c, r) =>
-      c("k", r, false)
+      c("k", r, None)
         .parReplicateA(4)
         .flatMap(_.traverse(_.bodyText.compile.foldMonoid))
         .assertEquals(List("a", "a", "a", "a"))
@@ -51,7 +52,8 @@ final class LocalCacheSuite extends CatsEffectSuite {
 
   test("reacquire cached response when forced") {
     TestControl.executeEmbed((cache, responses).flatMapN { (c, r) =>
-      (c("k", r, false) >> c("k", r, true))
+      c("k", r, None)
+        .flatMap { r1 => c("k", r, r1.some) }
         .flatMap(_.bodyText.compile.foldMonoid)
         .assertEquals("b")
     })
@@ -62,8 +64,14 @@ final class LocalCacheSuite extends CatsEffectSuite {
     TestControl.executeEmbed(
       (cache, responses, IO.deferred[Unit]).flatMapN { (c, r, started) =>
         val first =
-          c("k", Resource.eval(started.complete(()) >> IO.sleep(250.millis)) >> r, false)
-        val second = started.get >> c("k", r, true)
+          c("k", Resource.eval(started.complete(()) >> IO.sleep(250.millis)) >> r, None)
+
+        val second =
+          started.get >> c(
+            "k",
+            r,
+            Response[IO](body = Stream.emit('a'.toByte)).some
+          )
 
         first
           .background
@@ -80,7 +88,7 @@ final class LocalCacheSuite extends CatsEffectSuite {
         c(
           "k",
           Resource.raiseError[IO, Response[IO], Throwable](CacheSuiteException),
-          false
+          None
         ).intercept[CacheSuiteException.type]
 
       }
@@ -93,7 +101,7 @@ final class LocalCacheSuite extends CatsEffectSuite {
         c(
           "k",
           Resource.eval(IO.canceled.as(null: Response[IO])),
-          false
+          None
         ).intercept[CancellationException]
       }
     )
@@ -106,8 +114,8 @@ final class LocalCacheSuite extends CatsEffectSuite {
   test("external cancelation should gracefully release the cache key for later use") {
     TestControl.executeEmbed {
       val test = (cache, responses).flatMapN { (c, r) =>
-        val first = c("k", Resource.eval(IO.never), false)
-        val second = c("k", r, false)
+        val first = c("k", Resource.eval(IO.never), None)
+        val second = c("k", r, None)
 
         (first.start.flatMap(_.cancel) >> second)
           .flatMap(_.bodyText.compile.foldMonoid)
@@ -118,6 +126,47 @@ final class LocalCacheSuite extends CatsEffectSuite {
       // catch problems
       test.replicateA_(10000)
     }
+  }
+
+  test("Versioning overrides when hits  `cache == currentValue` (by X-Precog-Token) ") {
+
+    TestControl.executeEmbed {
+
+      cache.flatMap { c =>
+        def mkReq(newStatus: Status, expected: Status, cached: Option[Response[IO]]) =
+          c.apply("key", Resource.pure(Response(newStatus)), cached)
+            .flatMap(r => IO(assert(r.status == expected)).as(r))
+
+        val NoCache = None
+
+        for {
+          f <- mkReq(
+            newStatus = Status.Ok,
+            expected = Status.Ok,
+            cached = NoCache
+          )
+          _ <- mkReq(
+            newStatus = Status.Accepted,
+            expected = Status.Accepted,
+            cached = f.some
+          )
+
+          t <- mkReq(
+            newStatus = Status.InternalServerError,
+            expected = Status.Accepted,
+            cached = f.some // Older cache means we're not evaluating to InternalServerError
+          )
+          _ <- mkReq(
+            newStatus = Status.Created,
+            expected = Status.Created,
+            cached = t.some
+          )
+        } yield ()
+
+      }
+
+    }
+
   }
 
   //
