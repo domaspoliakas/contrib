@@ -128,23 +128,40 @@ final class LocalCacheSuite extends CatsEffectSuite {
     }
   }
 
-  test("versioning") {
+  test("Versioning overrides when hits  `cache == currentValue` (by X-Precog-Token) ") {
 
     TestControl.executeEmbed {
 
       cache.flatMap { c =>
-        val first = c.apply("key", Resource.pure(Response(Status.Ok)), None)
-        val second = c.apply("key", Resource.pure(Response(Status.Accepted)), Some(Response(Status.Ok)))
-        val third = c.apply("key", Resource.pure(Response(Status.InternalServerError)), Some(Response(Status.Ok)))
-        val fourth = c.apply("key", Resource.pure(Response(Status.Created)), Some(Response(Status.Accepted)))
+        def mkReq(newStatus: Status, expected: Status, cached: Option[Response[IO]]) =
+          c.apply("key", Resource.pure(Response(newStatus)), cached)
+            .flatMap(r => IO(assert(r.status == expected)).as(r))
 
-        first.map(_.status).assertEquals(Status.Ok) >>
-          // If the version matches then we make the next request
-          second.map(_.status).assertEquals(Status.Accepted) >>
-          // If the version does not match then we _don't_ make the request
-          third.map(_.status).assertEquals(Status.Accepted) >>
-          // Then we make one more request for funsies
-          fourth.map(_.status).assertEquals(Status.Created)
+        val NoCache = None
+
+        for {
+          f <- mkReq(
+            newStatus = Status.Ok,
+            expected = Status.Ok,
+            cached = NoCache
+          )
+          _ <- mkReq(
+            newStatus = Status.Accepted,
+            expected = Status.Accepted,
+            cached = f.some
+          )
+
+          t <- mkReq(
+            newStatus = Status.InternalServerError,
+            expected = Status.Accepted,
+            cached = f.some // Older cache means we're not evaluating to InternalServerError
+          )
+          _ <- mkReq(
+            newStatus = Status.Created,
+            expected = Status.Created,
+            cached = t.some
+          )
+        } yield ()
 
       }
 
