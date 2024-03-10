@@ -20,6 +20,7 @@ import scala.concurrent.duration._
 
 import cats.Applicative
 import cats.Functor
+import cats.effect.Resource
 import cats.effect.Temporal
 import cats.syntax.all._
 import cats.~>
@@ -34,13 +35,15 @@ import retry.RetryPolicy
 
 object RedisRateLimiting {
   def apply[F[_]: Temporal](
-      connection: RedisConnection[F],
+      connection: Resource[F, RedisConnection[F]],
       retryPolicy: RetryPolicy[F],
       onError: (Throwable, RetryDetails) => F[Unit]): RateLimiting[F] =
     new RateLimiting[F] {
       val executeRetrying: Redis[F, *] ~> F =
         λ[Redis[F, *] ~> F] { red =>
-          retry.retryingOnAllErrors(retryPolicy, onError)(red.run(connection))
+          retry.retryingOnAllErrors(retryPolicy, onError)(
+            connection.use(conn => red.run(conn))
+          )
         }
 
       def rateLimit(
