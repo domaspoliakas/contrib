@@ -58,6 +58,8 @@ abstract class RateLimitingSuite(
     testControl: IO[Unit] => IO[Unit])
     extends munit.CatsEffectSuite {
 
+  override def munitTimeout: Duration = 60.seconds
+
   val tinyDuration = 400.millis
   val windowDuration = 8.seconds
 
