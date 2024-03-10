@@ -72,11 +72,12 @@ object RedisTestkit {
       .build
   }
 
-  def connection: Resource[IO, RedisConnection[IO]] =
-    container.flatMap(containerConnection)
-
-  def rateLimiting: RateLimiting[IO] =
-    RedisRateLimiting[IO](connection, RetryPolicies.alwaysGiveUp, (_, _) => IO.unit)
+  def rateLimiting: Resource[IO, RateLimiting[IO]] =
+    container.map(cont =>
+      RedisRateLimiting[IO](
+        containerConnection(cont),
+        RetryPolicies.alwaysGiveUp,
+        (_, _) => IO.unit))
 
   def flakify(c: SingleContainer[_]): Resource[IO, Unit] =
     Random.scalaUtilRandom[IO].toResource.flatMap { rnd =>

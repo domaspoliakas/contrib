@@ -28,8 +28,7 @@ import precog.contrib.ratelimit.RedisTestkit
 class LocalRateLimitingSuite
     extends RateLimitingSuite(LocalRateLimiting[IO], TestControl.executeEmbed(_))
 
-class RedisRateLimitingSuite
-    extends RateLimitingSuite(Resource.pure(RedisTestkit.rateLimiting), identity) {
+class RedisRateLimitingSuite extends RateLimitingSuite(RedisTestkit.rateLimiting, identity) {
 
   test("redis: recovers from network failure") {
     val rl = RedisTestkit.flakyRateLimiting
@@ -58,8 +57,8 @@ abstract class RateLimitingSuite(
     testControl: IO[Unit] => IO[Unit])
     extends munit.CatsEffectSuite {
 
-  val tinyDuration = 2.seconds
-  val windowDuration = 40.seconds
+  val tinyDuration = 100.millis
+  val windowDuration = 2.seconds
 
   test("counting: sequence of limits works") {
     testControl {
