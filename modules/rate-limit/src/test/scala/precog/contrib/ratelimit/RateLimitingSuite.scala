@@ -31,22 +31,23 @@ class LocalRateLimitingSuite
 class RedisRateLimitingSuite extends RateLimitingSuite(RedisTestkit.rateLimiting, identity) {
 
   test("redis: recovers from network failure") {
-    val rl = RedisTestkit.flakyRateLimiting
+    RedisTestkit.flakyRateLimiting.use { rl =>
+      rl.rateLimit("flaky-id", 2, windowDuration, RateLimiting.Mode.Counting).flatMap {
+        signals =>
+          def until6(i: Int): IO[Unit] =
+            if (i < 6)
+              signals.limit >> until6(i + 1)
+            else
+              IO.unit
 
-    rl.rateLimit("flaky-id", 2, windowDuration, RateLimiting.Mode.Counting).flatMap { signals =>
-      def until6(i: Int): IO[Unit] =
-        if (i < 6)
-          signals.limit >> until6(i + 1)
-        else
-          IO.unit
-
-      (sleepToBeginWindow >> IO.realTime).flatMap { started =>
-        (until6(0) >> IO.realTime).flatMap { ended =>
-          val elapsed = ended - started
-          // 2 because it will finish at the start of the 3rd window
-          val lowerBound = windowDuration * 2 - tinyDuration // epsilon
-          IO(assert(lowerBound <= elapsed, s"expected ${lowerBound} <= ${elapsed}"))
-        }
+          (sleepToBeginWindow >> IO.realTime).flatMap { started =>
+            (until6(0) >> IO.realTime).flatMap { ended =>
+              val elapsed = ended - started
+              // 2 because it will finish at the start of the 3rd window
+              val lowerBound = windowDuration * 2 - tinyDuration // epsilon
+              IO(assert(lowerBound <= elapsed, s"expected ${lowerBound} <= ${elapsed}"))
+            }
+          }
       }
     }
   }

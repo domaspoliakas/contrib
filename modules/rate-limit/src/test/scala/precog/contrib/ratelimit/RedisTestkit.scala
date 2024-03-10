@@ -100,14 +100,13 @@ object RedisTestkit {
       (IO.sleep(500.millis) >> disrupt).background.void
     }
 
-  def flakyConnection: Resource[IO, RedisConnection[IO]] =
-    container.flatMap { c => flakify(c) >> containerConnection(c) }
-
-  def flakyRateLimiting: RateLimiting[IO] =
-    RedisRateLimiting[IO](
-      flakyConnection,
-      RetryPolicies.limitRetries[IO](10) join RetryPolicies.constantDelay(250.millis),
-      (_, _) => IO.unit
-      //(t: Throwable, d: RetryDetails) => IO.println(s"  RETRY $t $d")
-    )
+  def flakyRateLimiting: Resource[IO, RateLimiting[IO]] =
+    container.map { cont =>
+      RedisRateLimiting[IO](
+        (flakify(cont) >> containerConnection(cont)),
+        RetryPolicies.limitRetries[IO](10) join RetryPolicies.constantDelay(250.millis),
+        (_, _) => IO.unit
+        //(t: Throwable, d: RetryDetails) => IO.println(s"  RETRY $t $d")
+      )
+    }
 }
