@@ -60,7 +60,7 @@ object RedisTestkit {
     val servicePort = c.mappedPort(RedisPort)
 
     RedisConnection
-      .pool[IO]
+      .direct[IO]
       .withHost(
         Host
           .fromString(serviceHost)
@@ -72,13 +72,12 @@ object RedisTestkit {
       .build
   }
 
-  def connection: Resource[IO, RedisConnection[IO]] =
-    container.flatMap(containerConnection)
-
   def rateLimiting: Resource[IO, RateLimiting[IO]] =
-    connection.map { rconn =>
-      RedisRateLimiting[IO](rconn, RetryPolicies.alwaysGiveUp, (_, _) => IO.unit)
-    }
+    container.map(cont =>
+      RedisRateLimiting[IO](
+        containerConnection(cont),
+        RetryPolicies.alwaysGiveUp,
+        (_, _) => IO.unit))
 
   def flakify(c: SingleContainer[_]): Resource[IO, Unit] =
     Random.scalaUtilRandom[IO].toResource.flatMap { rnd =>
@@ -101,13 +100,10 @@ object RedisTestkit {
       (IO.sleep(500.millis) >> disrupt).background.void
     }
 
-  def flakyConnection: Resource[IO, RedisConnection[IO]] =
-    container.flatMap { c => flakify(c) >> containerConnection(c) }
-
   def flakyRateLimiting: Resource[IO, RateLimiting[IO]] =
-    flakyConnection.map { rconn =>
+    container.map { cont =>
       RedisRateLimiting[IO](
-        rconn,
+        (flakify(cont) >> containerConnection(cont)),
         RetryPolicies.limitRetries[IO](10) join RetryPolicies.constantDelay(250.millis),
         (_, _) => IO.unit
         //(t: Throwable, d: RetryDetails) => IO.println(s"  RETRY $t $d")
