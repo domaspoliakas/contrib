@@ -1,4 +1,4 @@
-ThisBuild / scalaVersion := "2.13.11"
+ThisBuild / scalaVersion := "2.13.13"
 
 ThisBuild / githubRepository := "contrib"
 
@@ -7,18 +7,18 @@ ThisBuild / homepage := Some(url("https://github.com/precog/contrib"))
 ThisBuild / scmInfo := Some(
   ScmInfo(url("https://github.com/precog/contrib"), "scm:git@github.com:precog/contrib.git"))
 
-val CatsEffectVersion = "3.4.8"
-val CatsRetryVersion = "3.1.0"
+val CatsEffectVersion = "3.5.4"
+val CatsRetryVersion = "3.1.3"
 val CatsTimeVersion = "0.5.1"
-val Http4sVersion = "0.23.14"
-val Log4CatsVersion = "2.5.0"
+val Http4sVersion = "0.23.26"
+val Log4CatsVersion = "2.6.0"
 val MunitCatsEffectVersion = "1.0.7"
 val MunitVersion = "0.7.29"
 val RediculousVersion = "0.5.0"
 val TestContainersVersion = "0.40.9"
 
 lazy val root =
-  project.in(file(".")).settings(noPublishSettings).aggregate(rateLimit, http4sLogger, cache)
+  project.in(file(".")).settings(noPublishSettings).aggregate(rateLimit, http4sLogger)
 
 lazy val rateLimit = project
   .in(file("modules/rate-limit"))
@@ -42,24 +42,6 @@ lazy val http4sLogger = project
   .settings(
     libraryDependencies ++= Seq(
       "org.http4s" %% "http4s-client" % Http4sVersion,
-      "org.typelevel" %% "log4cats-slf4j" % Log4CatsVersion,
-      "org.scalameta" %% "munit" % MunitVersion % Test,
-      "org.typelevel" %% "cats-effect-testkit" % CatsEffectVersion % Test,
-      "org.typelevel" %% "munit-cats-effect-3" % MunitCatsEffectVersion % Test
-    )
-  )
-
-lazy val cache = project
-  .in(file("modules/cache"))
-  .settings(name := "contrib-cache")
-  .settings(
-    Test / fork := true,
-    Test / javaOptions += "-XX:ActiveProcessorCount=2",
-    libraryDependencies ++= Seq(
-      "org.typelevel" %% "cats-effect" % CatsEffectVersion,
-      "org.http4s" %% "http4s-core" % Http4sVersion,
-      "org.scalameta" %% "munit" % MunitVersion % Test,
-      "org.typelevel" %% "cats-effect-testkit" % CatsEffectVersion % Test,
-      "org.typelevel" %% "munit-cats-effect-3" % MunitCatsEffectVersion % Test
+      "org.typelevel" %% "log4cats-slf4j" % Log4CatsVersion
     )
   )
